@@ -203,7 +203,104 @@ impl DemoBackend {
     }
 }
 
+const DEMO_ENDPOINTS: [&str; 4] = [
+    "POST /api/orders",
+    "GET /api/reports/export",
+    "POST /api/auth/token",
+    "GET /api/sites/{id}/readings",
+];
+
+const SQL_TIMEOUT: &str = "Execution Timeout Expired. The timeout period elapsed prior to completion of the operation or the server is not responding.";
+const BAD_GATEWAY: &str = "Response status code does not indicate success: 502 (Bad Gateway).";
+
 impl DemoBackend {
+    fn now(&self) -> DateTime<Utc> {
+        self.fixed_now.unwrap_or_else(Utc::now)
+    }
+
+    fn endpoint_exceptions(&self, name: &str) -> Table {
+        let rows = if name == DEMO_ENDPOINTS[0] {
+            vec![
+                json!(["SqlException", 9, SQL_TIMEOUT]),
+                json!(["HttpRequestException", 3, BAD_GATEWAY]),
+            ]
+        } else {
+            vec![json!(["TaskCanceledException", 2, "A task was canceled."])]
+        };
+        table(&["type", "n", "detail"], rows)
+    }
+
+    fn endpoint_dependencies(&self, name: &str) -> Table {
+        let rows = if name == DEMO_ENDPOINTS[0] {
+            vec![
+                json!(["SQL", "demo-sql.database.windows.net | appdb", 9]),
+                json!(["HTTP", "demo-func.azurewebsites.net", 3]),
+            ]
+        } else {
+            vec![]
+        };
+        table(&["type", "target", "n"], rows)
+    }
+
+    fn endpoint_recent(&self, name: &str) -> Table {
+        let at = |mins: i64, secs: i64| {
+            (self.now() - Duration::minutes(mins) - Duration::seconds(secs)).to_rfc3339()
+        };
+        let rows = if name == DEMO_ENDPOINTS[0] {
+            vec![
+                json!([
+                    at(8, 30),
+                    "500",
+                    30020.0,
+                    "demo-host-1",
+                    "op-7f3a9c2e",
+                    "req-0001",
+                    "SqlException"
+                ]),
+                json!([
+                    at(9, 2),
+                    "500",
+                    30010.0,
+                    "demo-host-0",
+                    "op-1b8e4c1d",
+                    "req-0002",
+                    "SqlException"
+                ]),
+                json!([
+                    at(15, 39),
+                    "502",
+                    2100.0,
+                    "demo-host-1",
+                    "op-4c1d7f3a",
+                    "req-0003",
+                    "HttpRequestException"
+                ]),
+            ]
+        } else {
+            vec![json!([
+                at(20, 0),
+                "504",
+                60000.0,
+                "demo-host-0",
+                "op-9a0b1c2d",
+                "req-0004",
+                "TaskCanceledException"
+            ])]
+        };
+        table(
+            &[
+                "timestamp",
+                "resultCode",
+                "duration",
+                "cloud_RoleInstance",
+                "operation_Id",
+                "id",
+                "exType",
+            ],
+            rows,
+        )
+    }
+
     fn bins(&self, range: TimeRange) -> Vec<DateTime<Utc>> {
         let g = range.grain_minutes();
         let now = self.fixed_now.unwrap_or_else(Utc::now);
@@ -326,6 +423,17 @@ impl Backend for DemoBackend {
                 .find(|r| r.iso() == timespan)
                 .unwrap_or_default();
             return Ok(self.failing_endpoints(range));
+        }
+        for name in DEMO_ENDPOINTS {
+            if kql_text == kql::endpoint_exceptions(name) {
+                return Ok(self.endpoint_exceptions(name));
+            }
+            if kql_text == kql::endpoint_dependencies(name) {
+                return Ok(self.endpoint_dependencies(name));
+            }
+            if kql_text == kql::endpoint_recent_failures(name) {
+                return Ok(self.endpoint_recent(name));
+            }
         }
         // Ranges sharing a grain produce identical KQL; the timespan decides.
         if let Some(range) = TimeRange::ALL

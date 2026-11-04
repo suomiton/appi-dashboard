@@ -6,7 +6,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::app::{DrillFrame, FrameData, View};
-use crate::data::drill::{Cell, ListData, NumFmt, ScreenData, Severity};
+use crate::data::drill::{Cell, EndpointData, ListData, NumFmt, ScreenData, Severity};
 use crate::data::format::{fmt_bytes, fmt_ms, fmt_num, truncate_width};
 use crate::ui::common::{Ctx, put_centered, put_line};
 use crate::ui::theme::{Rgb, palette};
@@ -32,6 +32,7 @@ pub fn render(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
                 palette::RED,
             ),
             FrameData::Ready(ScreenData::List(l)) => list_screen(buf, body, ctx, frame, l),
+            FrameData::Ready(ScreenData::Endpoint(e)) => endpoint_screen(buf, body, ctx, frame, e),
         }
     }
     footer_keys(buf, footer, ctx);
@@ -233,6 +234,153 @@ fn list_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, frame: &DrillFrame, l: &
                 Rect::new(inner.x, inner.y + y, inner.width, 1),
                 Style::new().bg(ctx.theme.color(palette::SEL_BG)),
             );
+        }
+    }
+}
+
+fn sub_panel(buf: &mut Buffer, area: Rect, ctx: &Ctx, title: &str, focused: bool) -> Rect {
+    PanelBlock {
+        title,
+        hotkey: None,
+        right: None,
+        emphasis: if focused {
+            Emphasis::Focused
+        } else {
+            Emphasis::Normal
+        },
+        stale: None,
+        theme: ctx.theme,
+    }
+    .render(area, buf);
+    PanelBlock::inner(area).intersection(buf.area)
+}
+
+fn bar(n: f64, max: f64, width: usize) -> String {
+    if max <= 0.0 || width == 0 {
+        return String::new();
+    }
+    let cells = ((n / max) * width as f64).round().clamp(1.0, width as f64) as usize;
+    format!("{:<width$}", "█".repeat(cells))
+}
+
+fn mark_selected(buf: &mut Buffer, inner: Rect, y: u16, ctx: &Ctx) {
+    buf.set_string(inner.x, inner.y + y, "▶", ctx.theme.fg(palette::BLUE));
+    buf.set_style(
+        Rect::new(inner.x, inner.y + y, inner.width, 1),
+        Style::new().bg(ctx.theme.color(palette::SEL_BG)),
+    );
+}
+
+fn code_color(code: &str) -> Rgb {
+    if code.starts_with('5') {
+        palette::RED
+    } else if code.starts_with('4') {
+        palette::YELLOW
+    } else {
+        palette::GREEN
+    }
+}
+
+fn endpoint_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, frame: &DrillFrame, e: &EndpointData) {
+    let top_h = ((area.height as u32 * 40 / 100) as u16)
+        .max(5)
+        .min(area.height);
+    let half = area.width / 2;
+    let exc_area = Rect::new(area.x, area.y, half, top_h);
+    let dep_area = Rect::new(area.x + half, area.y, area.width - half, top_h);
+    let recent_area = Rect::new(area.x, area.y + top_h, area.width, area.height - top_h);
+    let sel = |sub: usize| frame.selected[sub];
+
+    let inner = sub_panel(buf, exc_area, ctx, "exception types", frame.sub == 0);
+    let max = e.exceptions.iter().map(|x| x.n).fold(0.0, f64::max);
+    let w = inner.width as usize;
+    if e.exceptions.is_empty() {
+        put_line(buf, inner, 0, &Line::from(ctx.s("  none", palette::GREEN)));
+    }
+    for (i, x) in e.exceptions.iter().enumerate().take(inner.height as usize) {
+        let name_w = (w / 2).saturating_sub(2);
+        let bar_w = w.saturating_sub(name_w + 10).min(14);
+        let line = Line::from(vec![
+            ctx.s("  ", palette::DIM),
+            ctx.s(
+                format!("{:<name_w$} ", truncate_width(&x.name, name_w)),
+                palette::PURPLE,
+            ),
+            ctx.s(bar(x.n, max, bar_w), palette::PURPLE),
+            ctx.s(format!(" {:>4}", fmt_num(x.n)), palette::TEXT),
+        ]);
+        put_line(buf, inner, i as u16, &line);
+        if frame.sub == 0 && i == sel(0) {
+            mark_selected(buf, inner, i as u16, ctx);
+        }
+    }
+
+    let inner = sub_panel(buf, dep_area, ctx, "failing dependencies", frame.sub == 1);
+    let max = e.dependencies.iter().map(|x| x.n).fold(0.0, f64::max);
+    let w = inner.width as usize;
+    if e.dependencies.is_empty() {
+        put_line(buf, inner, 0, &Line::from(ctx.s("  none", palette::GREEN)));
+    }
+    for (i, d) in e
+        .dependencies
+        .iter()
+        .enumerate()
+        .take(inner.height as usize)
+    {
+        let name_w = (w / 2).saturating_sub(2);
+        let bar_w = w.saturating_sub(name_w + 10).min(14);
+        let label = truncate_width(&format!("{} {}", d.dep_type, d.target), name_w);
+        let line = Line::from(vec![
+            ctx.s("  ", palette::DIM),
+            ctx.s(format!("{label:<name_w$} "), palette::SOFT),
+            ctx.s(bar(d.n, max, bar_w), palette::ORANGE),
+            ctx.s(format!(" {:>4}", fmt_num(d.n)), palette::TEXT),
+        ]);
+        put_line(buf, inner, i as u16, &line);
+        if frame.sub == 1 && i == sel(1) {
+            mark_selected(buf, inner, i as u16, ctx);
+        }
+    }
+
+    let inner = sub_panel(buf, recent_area, ctx, "recent failures", frame.sub == 2);
+    if inner.height == 0 {
+        return;
+    }
+    put_line(
+        buf,
+        inner,
+        0,
+        &Line::from(ctx.s(
+            "  time      code  duration  instance          exception",
+            palette::DIM,
+        )),
+    );
+    if e.recent.is_empty() {
+        put_line(buf, inner, 1, &Line::from(ctx.s("  none", palette::GREEN)));
+    }
+    let visible = inner.height.saturating_sub(1) as usize;
+    let first = sel(2).saturating_sub(visible.saturating_sub(1));
+    for (i, r) in e.recent.iter().enumerate().skip(first).take(visible) {
+        let y = 1 + (i - first) as u16;
+        let line = Line::from(vec![
+            ctx.s(
+                format!("  {}  ", r.at.with_timezone(&ctx.offset).format("%H:%M:%S")),
+                palette::SOFT,
+            ),
+            ctx.s(format!("{:<4}  ", r.code), code_color(&r.code)),
+            ctx.s(format!("{:>8}  ", fmt_ms(r.duration_ms)), palette::TEXT),
+            ctx.s(
+                format!("{:<16}  ", truncate_width(&r.instance, 16)),
+                palette::SOFT,
+            ),
+            ctx.s(
+                r.exception_type.clone().unwrap_or_default(),
+                palette::PURPLE,
+            ),
+        ]);
+        put_line(buf, inner, y, &line);
+        if frame.sub == 2 && i == sel(2) {
+            mark_selected(buf, inner, y, ctx);
         }
     }
 }

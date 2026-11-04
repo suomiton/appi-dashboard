@@ -108,7 +108,20 @@ impl DrillFrame {
     pub fn rows(&self) -> usize {
         match &self.data {
             FrameData::Ready(ScreenData::List(l)) => l.rows.len(),
+            FrameData::Ready(ScreenData::Endpoint(e)) => match self.sub {
+                0 => e.exceptions.len(),
+                1 => e.dependencies.len(),
+                _ => e.recent.len(),
+            },
             _ => 0,
+        }
+    }
+
+    /// Number of sub-panels Left/Right cycles through.
+    pub fn subs(&self) -> usize {
+        match self.target {
+            DrillTarget::EndpointFailures { .. } => 3,
+            _ => 1,
         }
     }
 
@@ -118,6 +131,16 @@ impl DrillFrame {
             FrameData::Ready(ScreenData::List(l)) => {
                 l.rows.get(self.selected[0]).and_then(|r| r.next.clone())
             }
+            FrameData::Ready(ScreenData::Endpoint(e)) => match self.sub {
+                2 => e
+                    .recent
+                    .get(self.selected[2])
+                    .map(|r| DrillTarget::RequestDetail {
+                        operation_id: r.operation_id.clone(),
+                        request_id: Some(r.request_id.clone()).filter(|id| !id.is_empty()),
+                    }),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -414,13 +437,17 @@ impl App {
     fn push_frame(&mut self, target: DrillTarget) -> Vec<Command> {
         match self.fetch_frame(target.clone()) {
             Some((id, cmd)) => {
+                let sub = match target {
+                    DrillTarget::EndpointFailures { .. } => 2,
+                    _ => 0,
+                };
                 self.drill.push(DrillFrame {
                     id,
                     target,
                     data: FrameData::Loading,
                     selected: [0; 3],
                     sort: None,
-                    sub: 0,
+                    sub,
                 });
                 vec![cmd]
             }
@@ -490,7 +517,8 @@ impl App {
             KeyCode::Char('s') => self.cycle_sort(),
             KeyCode::Char('r') => return Some(self.reload_frame()),
             KeyCode::Char(c) if c.is_ascii_digit() => {}
-            KeyCode::Left | KeyCode::Right => {}
+            KeyCode::Right => f.sub = (f.sub + 1) % f.subs(),
+            KeyCode::Left => f.sub = (f.sub + f.subs() - 1) % f.subs(),
             _ => return None,
         }
         Some(Vec::new())
@@ -1310,6 +1338,61 @@ pub(crate) mod tests {
             Some(DrillTarget::FailingEndpoints)
         );
         assert_eq!(drill_target(PanelId::Health), None);
+    }
+
+    fn endpoint_frame(a: &mut App) {
+        let (e, d, r) = crate::data::drill::tests::endpoint_tables();
+        let data = crate::data::drill::endpoint_data("POST /api/orders", &e, &d, &r);
+        let cmds = a.on_key(k(KeyCode::Enter), Instant::now());
+        let id = drill_requests(&cmds)[0].0;
+        a.on_data(
+            DataEvent::Drill {
+                frame_id: id,
+                result: Ok(ScreenData::Endpoint(data)),
+            },
+            Instant::now(),
+            wall(),
+        );
+    }
+
+    #[test]
+    fn endpoint_screen_opens_on_recent_failures() {
+        let mut a = drilled();
+        endpoint_frame(&mut a);
+        assert_eq!(a.drill.len(), 2);
+        assert_eq!(a.drill[1].sub, 2);
+    }
+
+    #[test]
+    fn left_right_switch_sub_panels() {
+        let mut a = drilled();
+        endpoint_frame(&mut a);
+        let now = Instant::now();
+        a.on_key(k(KeyCode::Right), now);
+        assert_eq!(a.drill[1].sub, 0, "wraps");
+        a.on_key(k(KeyCode::Down), now);
+        assert_eq!(a.drill[1].selected, [1, 0, 0]);
+        a.on_key(k(KeyCode::Left), now);
+        a.on_key(k(KeyCode::Left), now);
+        assert_eq!(a.drill[1].sub, 1);
+        a.on_key(k(KeyCode::Down), now);
+        assert_eq!(a.drill[1].selected[1], 0, "only one dependency row");
+    }
+
+    #[test]
+    fn enter_on_recent_opens_request_detail() {
+        let mut a = drilled();
+        endpoint_frame(&mut a);
+        let now = Instant::now();
+        a.on_key(k(KeyCode::Down), now);
+        let reqs = drill_requests(&a.on_key(k(KeyCode::Enter), now));
+        assert_eq!(
+            reqs[0].1,
+            DrillTarget::RequestDetail {
+                operation_id: "op-2".into(),
+                request_id: Some("req-2".into())
+            }
+        );
     }
 
     #[test]

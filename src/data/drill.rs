@@ -8,6 +8,7 @@ use crate::azure::discovery::AppInstance;
 use crate::azure::http::AzError;
 use crate::azure::logs::Table;
 use crate::data::backend::Backend;
+use crate::data::dashboard::TopItem;
 use crate::data::kql;
 use crate::data::time::TimeRange;
 
@@ -122,8 +123,73 @@ pub struct ListData {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct DepItem {
+    pub dep_type: String,
+    pub target: String,
+    pub n: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecentFailure {
+    pub at: DateTime<Utc>,
+    pub code: String,
+    pub duration_ms: f64,
+    pub instance: String,
+    pub operation_id: String,
+    pub request_id: String,
+    pub exception_type: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EndpointData {
+    pub name: String,
+    pub exceptions: Vec<TopItem>,
+    pub dependencies: Vec<DepItem>,
+    pub recent: Vec<RecentFailure>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum ScreenData {
     List(ListData),
+    Endpoint(EndpointData),
+}
+
+/// Builds the endpoint screen from its three query results.
+pub fn endpoint_data(name: &str, exceptions: &Table, deps: &Table, recent: &Table) -> EndpointData {
+    let s = |t: &Table, r: usize, c: &str| t.str(r, c).unwrap_or_default().to_string();
+    EndpointData {
+        name: name.to_string(),
+        exceptions: (0..exceptions.len())
+            .map(|r| TopItem {
+                name: s(exceptions, r, "type"),
+                detail: s(exceptions, r, "detail"),
+                n: exceptions.f64(r, "n").unwrap_or(0.0),
+            })
+            .collect(),
+        dependencies: (0..deps.len())
+            .map(|r| DepItem {
+                dep_type: s(deps, r, "type"),
+                target: s(deps, r, "target"),
+                n: deps.f64(r, "n").unwrap_or(0.0),
+            })
+            .collect(),
+        recent: (0..recent.len())
+            .filter_map(|r| {
+                Some(RecentFailure {
+                    at: recent.time(r, "timestamp")?,
+                    code: s(recent, r, "resultCode"),
+                    duration_ms: recent.f64(r, "duration").unwrap_or(0.0),
+                    instance: s(recent, r, "cloud_RoleInstance"),
+                    operation_id: s(recent, r, "operation_Id"),
+                    request_id: s(recent, r, "id"),
+                    exception_type: recent
+                        .str(r, "exType")
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_string),
+                })
+            })
+            .collect(),
+    }
 }
 
 /// Loads the data for one drill-down screen.
@@ -140,6 +206,19 @@ pub async fn load(
                 .query(&inst.app_id, &kql::failing_endpoints(range), range.iso())
                 .await?;
             Ok(ScreenData::List(failing_endpoints_list(&t, range)))
+        }
+        DrillTarget::EndpointFailures { name } => {
+            let (e, d, r) = (
+                kql::endpoint_exceptions(name),
+                kql::endpoint_dependencies(name),
+                kql::endpoint_recent_failures(name),
+            );
+            let (e, d, r) = tokio::join!(
+                backend.query(&inst.app_id, &e, range.iso()),
+                backend.query(&inst.app_id, &d, range.iso()),
+                backend.query(&inst.app_id, &r, range.iso()),
+            );
+            Ok(ScreenData::Endpoint(endpoint_data(name, &e?, &d?, &r?)))
         }
         _ => Err(AzError::Decode("not implemented".into())),
     }
@@ -303,6 +382,96 @@ pub(crate) mod tests {
             .find(|r| r.cells[0] == Cell::Text("POST /api/auth/token".into()))
             .unwrap();
         assert_eq!(auth.severity, Severity::Warn);
+    }
+
+    pub(crate) fn endpoint_tables() -> (Table, Table, Table) {
+        (
+            table(
+                &["type", "n", "detail"],
+                vec![
+                    json!(["SqlException", 9, "Execution Timeout Expired"]),
+                    json!(["HttpRequestException", 3, "502 (Bad Gateway)"]),
+                ],
+            ),
+            table(
+                &["type", "target", "n"],
+                vec![json!(["SQL", "demo-sql | appdb", 9])],
+            ),
+            table(
+                &[
+                    "timestamp",
+                    "resultCode",
+                    "duration",
+                    "cloud_RoleInstance",
+                    "operation_Id",
+                    "id",
+                    "exType",
+                ],
+                vec![
+                    json!([
+                        "2026-11-04T12:58:12Z",
+                        "500",
+                        30020.5,
+                        "demo-host-1",
+                        "op-1",
+                        "req-1",
+                        "SqlException"
+                    ]),
+                    json!([
+                        "2026-11-04T12:51:03Z",
+                        "502",
+                        2100,
+                        "demo-host-0",
+                        "op-2",
+                        "req-2",
+                        null
+                    ]),
+                ],
+            ),
+        )
+    }
+
+    #[test]
+    fn endpoint_data_parses_tables() {
+        let (e, d, r) = endpoint_tables();
+        let data = endpoint_data("POST /api/orders", &e, &d, &r);
+        assert_eq!(data.name, "POST /api/orders");
+        assert_eq!(data.exceptions[0].name, "SqlException");
+        assert_eq!(data.exceptions[0].n, 9.0);
+        assert_eq!(data.exceptions[1].detail, "502 (Bad Gateway)");
+        assert_eq!(
+            data.dependencies[0],
+            DepItem {
+                dep_type: "SQL".into(),
+                target: "demo-sql | appdb".into(),
+                n: 9.0
+            }
+        );
+        assert_eq!(data.recent.len(), 2);
+        assert_eq!(data.recent[0].duration_ms, 30020.5);
+        assert_eq!(data.recent[0].operation_id, "op-1");
+        assert_eq!(
+            data.recent[0].exception_type.as_deref(),
+            Some("SqlException")
+        );
+        assert_eq!(data.recent[1].exception_type, None);
+    }
+
+    #[tokio::test]
+    async fn load_endpoint_runs_three_queries() {
+        let (e, d, r) = endpoint_tables();
+        let name = "POST /api/orders";
+        let b = crate::data::backend::fake::FakeBackend::new()
+            .with_query(kql::endpoint_exceptions(name), Ok(e))
+            .with_query(kql::endpoint_dependencies(name), Ok(d))
+            .with_query(kql::endpoint_recent_failures(name), Ok(r));
+        let inst = crate::data::demo::demo_instances().remove(0);
+        let target = DrillTarget::EndpointFailures { name: name.into() };
+        let data = load(&b, &inst, TimeRange::H4, &target, chrono::Utc::now())
+            .await
+            .unwrap();
+        assert!(matches!(data, ScreenData::Endpoint(d) if d.recent.len() == 2));
+        assert_eq!(b.calls().len(), 3);
     }
 
     #[test]

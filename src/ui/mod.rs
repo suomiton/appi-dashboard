@@ -603,6 +603,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn endpoint_screen_snapshot() {
+        let (app, mono) = drill_app(View::Overview, '2', &[0]);
+        assert!(matches!(
+            app.drill[1].data,
+            crate::app::FrameData::Ready(crate::data::drill::ScreenData::Endpoint(_))
+        ));
+        let t = render(&app, mono, 120, 34);
+        let out = text(&t);
+        assert!(out.contains("overview › failed requests › POST /api/orders"));
+        assert!(out.contains("SqlException"));
+        insta::assert_snapshot!("endpoint_screen_120x34", t.backend());
+    }
+
+    #[test]
     fn drill_loading_and_failed_states() {
         let (mut app, mono) = drill_app(View::Overview, '2', &[]);
         app.drill[0].data = crate::app::FrameData::Loading;
