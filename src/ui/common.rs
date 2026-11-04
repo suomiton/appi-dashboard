@@ -1,6 +1,6 @@
 //! Pieces shared by the dashboard screens.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -20,6 +20,8 @@ pub struct Ctx<'a> {
     pub app: &'a App,
     pub theme: &'a Theme,
     pub now: DateTime<Utc>,
+    /// The local UTC offset, for showing timestamps.
+    pub offset: FixedOffset,
 }
 
 impl Ctx<'_> {

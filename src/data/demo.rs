@@ -203,6 +203,36 @@ impl DemoBackend {
     }
 }
 
+impl DemoBackend {
+    fn bins(&self, range: TimeRange) -> Vec<DateTime<Utc>> {
+        let g = range.grain_minutes();
+        let now = self.fixed_now.unwrap_or_else(Utc::now);
+        let end = now - Duration::seconds(now.timestamp() % (g * 60));
+        let n = range.minutes() / g;
+        (0..n)
+            .map(|k| end - Duration::minutes((n - k) * g))
+            .collect()
+    }
+
+    /// 24 failures over four made-up endpoints, the mockup's numbers.
+    fn failing_endpoints(&self, range: TimeRange) -> Table {
+        let bins = self.bins(range);
+        let n = bins.len();
+        let at = |i: usize| bins[i.min(n - 1)].to_rfc3339();
+        let mut rows = vec![
+            json!(["POST /api/orders", "500", at(n - 1), 4]),
+            json!(["POST /api/orders", "500", at(n - 2), 5]),
+            json!(["POST /api/orders", "502", at(n - 1), 3]),
+            json!(["POST /api/auth/token", "401", at(n - 1), 3]),
+            json!(["GET /api/sites/{id}/readings", "500", at(0), 2]),
+        ];
+        for k in 1..=7 {
+            rows.push(json!(["GET /api/reports/export", "504", at(k * n / 8), 1]));
+        }
+        table(&["name", "resultCode", "timestamp", "n"], rows)
+    }
+}
+
 fn table(columns: &[&str], rows: Vec<Value>) -> Table {
     Table {
         columns: columns.iter().map(|c| c.to_string()).collect(),
@@ -286,6 +316,16 @@ impl Backend for DemoBackend {
                     ]),
                 ],
             ));
+        }
+        if TimeRange::ALL
+            .iter()
+            .any(|r| kql_text == kql::failing_endpoints(*r))
+        {
+            let range = TimeRange::ALL
+                .into_iter()
+                .find(|r| r.iso() == timespan)
+                .unwrap_or_default();
+            return Ok(self.failing_endpoints(range));
         }
         // Ranges sharing a grain produce identical KQL; the timespan decides.
         if let Some(range) = TimeRange::ALL

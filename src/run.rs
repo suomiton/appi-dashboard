@@ -45,6 +45,22 @@ pub fn spawn_data_service(
                             .await,
                     ),
                     DataRequest::Discover => DataEvent::Instances(backend.instances().await),
+                    DataRequest::Drill {
+                        frame_id,
+                        instance,
+                        range,
+                        target,
+                    } => DataEvent::Drill {
+                        frame_id,
+                        result: crate::data::drill::load(
+                            backend.as_ref(),
+                            &instance,
+                            range,
+                            &target,
+                            Utc::now(),
+                        )
+                        .await,
+                    },
                 };
                 let _ = tx.send(ev);
             });

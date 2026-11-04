@@ -1,6 +1,7 @@
 //! Terminal UI: theme, widgets, layouts and screens.
 
 pub mod common;
+pub mod drill;
 pub mod failures;
 pub mod layout;
 pub mod overview;
@@ -60,6 +61,7 @@ pub fn render(
         app,
         theme,
         now: now.with_timezone(&Utc),
+        offset: *now.offset(),
     };
     if let Some(problem) = &app.auth_problem {
         let rows = Rect::new(area.x, area.y, area.width, 1);
@@ -80,18 +82,28 @@ pub fn render(
         }
         return;
     }
-    match app.view {
-        View::Overview => {
-            let l = overview_layout(area);
-            header(buf, l.header, &ctx, now, mono);
-            overview::render(buf, &l, &ctx);
-            footer(buf, l.footer, &ctx, mono);
-        }
-        View::Failures => {
-            let l = failures_layout(area);
-            header(buf, l.header, &ctx, now, mono);
-            failures::render(buf, &l, &ctx);
-            footer(buf, l.footer, &ctx, mono);
+    if !app.drill.is_empty() {
+        let rows = Rect::new(area.x, area.y, area.width, 1);
+        header(buf, rows, &ctx, now, mono);
+        drill::render(
+            buf,
+            Rect::new(area.x, area.y + 1, area.width, area.height - 1),
+            &ctx,
+        );
+    } else {
+        match app.view {
+            View::Overview => {
+                let l = overview_layout(area);
+                header(buf, l.header, &ctx, now, mono);
+                overview::render(buf, &l, &ctx);
+                footer(buf, l.footer, &ctx, mono);
+            }
+            View::Failures => {
+                let l = failures_layout(area);
+                header(buf, l.header, &ctx, now, mono);
+                failures::render(buf, &l, &ctx);
+                footer(buf, l.footer, &ctx, mono);
+            }
         }
     }
     if let Some(p) = &app.picker {
@@ -535,6 +547,82 @@ pub(crate) mod tests {
         assert!(out.contains("select application insights"));
         assert!(out.contains("esc quit"));
         assert!(!out.contains("sessions & users"));
+    }
+
+    /// Opens drill-down screens from `panel` by pressing Enter along `path`
+    /// (row indexes to select before each further Enter), loading each
+    /// screen from the demo backend.
+    pub(crate) fn drill_app(view: View, panel: char, path: &[usize]) -> (App, Instant) {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (mut app, mono) = demo_app(view);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        app.on_key(key(KeyCode::Char(panel)), mono);
+        let mut cmds = app.on_key(key(KeyCode::Enter), mono);
+        let mut step = 0;
+        loop {
+            for c in std::mem::take(&mut cmds) {
+                if let crate::app::Command::Fetch(crate::app::DataRequest::Drill {
+                    frame_id,
+                    instance,
+                    range,
+                    target,
+                }) = c
+                {
+                    let result = rt.block_on(crate::data::drill::load(
+                        &DemoBackend::at(wall()),
+                        &instance,
+                        range,
+                        &target,
+                        wall(),
+                    ));
+                    app.on_data(DataEvent::Drill { frame_id, result }, mono, wall());
+                }
+            }
+            let Some(row) = path.get(step) else { break };
+            for _ in 0..*row {
+                app.on_key(key(KeyCode::Down), mono);
+            }
+            cmds = app.on_key(key(KeyCode::Enter), mono);
+            step += 1;
+        }
+        (app, mono)
+    }
+
+    #[test]
+    fn failing_endpoints_snapshot() {
+        let (app, mono) = drill_app(View::Overview, '2', &[]);
+        assert!(matches!(app.drill[0].data, crate::app::FrameData::Ready(_)));
+        let t = render(&app, mono, 100, 30);
+        let out = text(&t);
+        assert!(out.contains("overview › failed requests"), "{out}");
+        assert!(out.contains("POST /api/orders"));
+        insta::assert_snapshot!("failing_endpoints_100x30", t.backend());
+    }
+
+    #[test]
+    fn drill_loading_and_failed_states() {
+        let (mut app, mono) = drill_app(View::Overview, '2', &[]);
+        app.drill[0].data = crate::app::FrameData::Loading;
+        assert!(text(&render(&app, mono, 100, 30)).contains("loading…"));
+        app.drill[0].data = crate::app::FrameData::Failed("HTTP 500: boom".into());
+        let out = text(&render(&app, mono, 100, 30));
+        assert!(out.contains("HTTP 500: boom") && out.contains("r to retry"));
+    }
+
+    #[test]
+    fn long_endpoint_names_truncate() {
+        let (mut app, mono) = drill_app(View::Overview, '2', &[]);
+        if let crate::app::FrameData::Ready(crate::data::drill::ScreenData::List(l)) =
+            &mut app.drill[0].data
+        {
+            l.rows[0].cells[0] =
+                crate::data::drill::Cell::Text(format!("GET /{}", "y".repeat(300)));
+        }
+        let out = text(&render(&app, mono, 80, 24));
+        assert!(out.contains('…'));
     }
 
     #[test]

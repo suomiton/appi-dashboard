@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::data::alerts::{AlertState, evaluate};
 use crate::data::dashboard::DashboardUpdate;
 pub use crate::data::dashboard::View;
+use crate::data::drill::{Cell, DrillTarget, ScreenData, sort_rows};
 use crate::data::store::Store;
 use crate::data::time::{TimeRange, refresh_step};
 
@@ -73,6 +74,57 @@ pub fn hotkey(view: View, p: PanelId) -> Option<char> {
         .and_then(|i| HOTKEYS.get(i).copied())
 }
 
+/// Which drill-down screen a panel opens, if any.
+pub fn drill_target(p: PanelId) -> Option<DrillTarget> {
+    match p {
+        PanelId::FailedRequests | PanelId::FailuresMain => Some(DrillTarget::FailingEndpoints),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum FrameData {
+    Loading,
+    Ready(ScreenData),
+    Failed(String),
+}
+
+/// One open drill-down screen.
+#[derive(Clone, Debug)]
+pub struct DrillFrame {
+    pub id: u64,
+    pub target: DrillTarget,
+    pub data: FrameData,
+    /// Selected row per sub-panel (list screens use index 0).
+    pub selected: [usize; 3],
+    /// Sort column and whether it sorts descending.
+    pub sort: Option<(usize, bool)>,
+    /// The focused sub-panel on multi-panel screens.
+    pub sub: usize,
+}
+
+impl DrillFrame {
+    /// Number of selectable rows in the focused sub-panel.
+    pub fn rows(&self) -> usize {
+        match &self.data {
+            FrameData::Ready(ScreenData::List(l)) => l.rows.len(),
+            _ => 0,
+        }
+    }
+
+    /// Where Enter goes from the selected row.
+    pub fn next_target(&self) -> Option<DrillTarget> {
+        match &self.data {
+            FrameData::Ready(ScreenData::List(l)) => {
+                l.rows.get(self.selected[0]).and_then(|r| r.next.clone())
+            }
+            _ => None,
+        }
+    }
+}
+
+const PAGE: usize = 10;
+
 #[derive(Clone, Debug)]
 pub enum DataRequest {
     Refresh {
@@ -81,6 +133,12 @@ pub enum DataRequest {
         view: View,
     },
     Discover,
+    Drill {
+        frame_id: u64,
+        instance: AppInstance,
+        range: TimeRange,
+        target: DrillTarget,
+    },
 }
 
 /// Each event moves through the channel exactly once, so the size
@@ -90,6 +148,10 @@ pub enum DataRequest {
 pub enum DataEvent {
     Dashboard(DashboardUpdate),
     Instances(Result<Vec<AppInstance>, AzError>),
+    Drill {
+        frame_id: u64,
+        result: Result<ScreenData, AzError>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -187,6 +249,9 @@ pub struct App {
     /// that refresh's result belongs to the old selection and is dropped.
     discard_in_flight: bool,
     pub picker: Option<PickerState>,
+    /// Open drill-down screens, innermost last.
+    pub drill: Vec<DrillFrame>,
+    next_frame_id: u64,
 }
 
 impl App {
@@ -212,6 +277,8 @@ impl App {
             next_refresh: None,
             discard_in_flight: false,
             picker: None,
+            drill: Vec::new(),
+            next_frame_id: 1,
         }
     }
 
@@ -254,6 +321,7 @@ impl App {
 
     fn select_instance(&mut self, inst: AppInstance, now: Instant) -> Vec<Command> {
         self.config.remember(&inst);
+        self.drill.clear();
         self.instance = Some(inst);
         self.picker = None;
         self.auth_problem = None;
@@ -328,6 +396,106 @@ impl App {
         Vec::new()
     }
 
+    fn fetch_frame(&mut self, target: DrillTarget) -> Option<(u64, Command)> {
+        let inst = self.instance.clone()?;
+        let id = self.next_frame_id;
+        self.next_frame_id += 1;
+        Some((
+            id,
+            Command::Fetch(DataRequest::Drill {
+                frame_id: id,
+                instance: inst,
+                range: self.range,
+                target,
+            }),
+        ))
+    }
+
+    fn push_frame(&mut self, target: DrillTarget) -> Vec<Command> {
+        match self.fetch_frame(target.clone()) {
+            Some((id, cmd)) => {
+                self.drill.push(DrillFrame {
+                    id,
+                    target,
+                    data: FrameData::Loading,
+                    selected: [0; 3],
+                    sort: None,
+                    sub: 0,
+                });
+                vec![cmd]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn reload_frame(&mut self) -> Vec<Command> {
+        let Some(target) = self.drill.last().map(|f| f.target.clone()) else {
+            return Vec::new();
+        };
+        match self.fetch_frame(target) {
+            Some((id, cmd)) => {
+                if let Some(f) = self.drill.last_mut() {
+                    f.id = id;
+                    f.data = FrameData::Loading;
+                }
+                vec![cmd]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn cycle_sort(&mut self) {
+        let Some(f) = self.drill.last_mut() else {
+            return;
+        };
+        let FrameData::Ready(ScreenData::List(l)) = &mut f.data else {
+            return;
+        };
+        if l.columns.is_empty() {
+            return;
+        }
+        let col = (f.sort.map_or(0, |(c, _)| c) + 1) % l.columns.len();
+        let is_text = l
+            .rows
+            .first()
+            .and_then(|r| r.cells.get(col))
+            .is_some_and(|c| matches!(c, Cell::Text(_)));
+        sort_rows(&mut l.rows, col);
+        f.sort = Some((col, !is_text));
+        f.selected[f.sub] = 0;
+    }
+
+    /// Keys while a drill-down screen is open. `None` means "not a drill
+    /// key": the dashboard handles it (quit, help, interval, range…).
+    fn on_drill_key(&mut self, key: KeyEvent) -> Option<Vec<Command>> {
+        let f = self.drill.last_mut()?;
+        let rows = f.rows();
+        let sel = &mut f.selected[f.sub];
+        match key.code {
+            KeyCode::Up => *sel = sel.saturating_sub(1),
+            KeyCode::Down => *sel = (*sel + 1).min(rows.saturating_sub(1)),
+            KeyCode::PageUp => *sel = sel.saturating_sub(PAGE),
+            KeyCode::PageDown => *sel = (*sel + PAGE).min(rows.saturating_sub(1)),
+            KeyCode::Home => *sel = 0,
+            KeyCode::End => *sel = rows.saturating_sub(1),
+            KeyCode::Enter => {
+                return Some(match f.next_target() {
+                    Some(t) => self.push_frame(t),
+                    None => Vec::new(),
+                });
+            }
+            KeyCode::Esc => {
+                self.drill.pop();
+            }
+            KeyCode::Char('s') => self.cycle_sort(),
+            KeyCode::Char('r') => return Some(self.reload_frame()),
+            KeyCode::Char(c) if c.is_ascii_digit() => {}
+            KeyCode::Left | KeyCode::Right => {}
+            _ => return None,
+        }
+        Some(Vec::new())
+    }
+
     fn reset_data(&mut self, now: Instant) -> Vec<Command> {
         self.store.clear();
         self.alerts = AlertState::default();
@@ -378,6 +546,15 @@ impl App {
                 Vec::new()
             }
             DataEvent::Instances(result) => self.on_instances(result, now),
+            DataEvent::Drill { frame_id, result } => {
+                if let Some(f) = self.drill.iter_mut().find(|f| f.id == frame_id) {
+                    f.data = match result {
+                        Ok(d) => FrameData::Ready(d),
+                        Err(e) => FrameData::Failed(e.to_string()),
+                    };
+                }
+                Vec::new()
+            }
         }
     }
 
@@ -404,6 +581,18 @@ impl App {
         }
         if self.picker.is_some() {
             return self.on_picker_key(key, now);
+        }
+        if self.help && key.code == KeyCode::Esc {
+            self.help = false;
+            return Vec::new();
+        }
+        if !self.drill.is_empty() {
+            if let Some(cmds) = self.on_drill_key(key) {
+                return cmds;
+            }
+            if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                self.drill.clear();
+            }
         }
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
@@ -439,7 +628,13 @@ impl App {
                 self.next_refresh = Some(now + Duration::from_secs(self.refresh_secs));
                 return vec![Command::SaveConfig(self.config.clone())];
             }
+            KeyCode::Enter => {
+                if let Some(t) = self.focus.and_then(drill_target) {
+                    return self.push_frame(t);
+                }
+            }
             KeyCode::Char('t') => {
+                self.drill.clear();
                 self.range = self.range.next();
                 self.config.range = self.range;
                 let mut cmds = vec![Command::SaveConfig(self.config.clone())];
@@ -931,6 +1126,190 @@ pub(crate) mod tests {
         let cmds = a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
         assert!(!a.store.has_data(SeriesId::RequestsFailed));
         assert_eq!(fetches(&cmds), 1);
+    }
+
+    fn drill_requests(cmds: &[Command]) -> Vec<(u64, DrillTarget)> {
+        cmds.iter()
+            .filter_map(|c| match c {
+                Command::Fetch(DataRequest::Drill {
+                    frame_id, target, ..
+                }) => Some((*frame_id, target.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn list_frame() -> ScreenData {
+        ScreenData::List(crate::data::drill::failing_endpoints_list(
+            &crate::data::drill::tests::endpoints_table(),
+            TimeRange::H4,
+        ))
+    }
+
+    fn drilled() -> App {
+        let mut a = app();
+        let now = Instant::now();
+        a.on_key(ch('2'), now);
+        let cmds = a.on_key(k(KeyCode::Enter), now);
+        let (id, _) = drill_requests(&cmds)[0].clone();
+        a.on_data(
+            DataEvent::Drill {
+                frame_id: id,
+                result: Ok(list_frame()),
+            },
+            now,
+            wall(),
+        );
+        a
+    }
+
+    #[test]
+    fn enter_on_failed_panel_pushes_loading_frame_and_fetches() {
+        let mut a = app();
+        let now = Instant::now();
+        assert!(
+            a.on_key(k(KeyCode::Enter), now).is_empty(),
+            "no focus: nothing"
+        );
+        a.on_key(ch('2'), now);
+        let cmds = a.on_key(k(KeyCode::Enter), now);
+        let reqs = drill_requests(&cmds);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].1, DrillTarget::FailingEndpoints);
+        assert_eq!(a.drill.len(), 1);
+        assert!(matches!(a.drill[0].data, FrameData::Loading));
+        a.on_key(ch('1'), now);
+        assert_eq!(
+            a.focus,
+            Some(PanelId::FailedRequests),
+            "digits do not change focus in a drill"
+        );
+    }
+
+    #[test]
+    fn panels_without_drill_do_nothing() {
+        let mut a = app();
+        let now = Instant::now();
+        a.on_key(ch('1'), now);
+        assert!(a.on_key(k(KeyCode::Enter), now).is_empty());
+        assert!(a.drill.is_empty());
+    }
+
+    #[test]
+    fn esc_pops_back_to_dashboard_keeping_focus() {
+        let mut a = drilled();
+        a.on_key(k(KeyCode::Esc), Instant::now());
+        assert!(a.drill.is_empty());
+        assert_eq!(a.focus, Some(PanelId::FailedRequests));
+    }
+
+    #[test]
+    fn stale_drill_result_ignored() {
+        let mut a = app();
+        let now = Instant::now();
+        a.on_key(ch('2'), now);
+        let id = drill_requests(&a.on_key(k(KeyCode::Enter), now))[0].0;
+        a.on_key(k(KeyCode::Esc), now);
+        a.on_data(
+            DataEvent::Drill {
+                frame_id: id,
+                result: Ok(list_frame()),
+            },
+            now,
+            wall(),
+        );
+        assert!(a.drill.is_empty());
+    }
+
+    #[test]
+    fn failed_load_shows_error_and_r_reloads() {
+        let mut a = app();
+        let now = Instant::now();
+        a.on_key(ch('2'), now);
+        let id = drill_requests(&a.on_key(k(KeyCode::Enter), now))[0].0;
+        a.on_data(
+            DataEvent::Drill {
+                frame_id: id,
+                result: Err(AzError::Network("down".into())),
+            },
+            now,
+            wall(),
+        );
+        assert!(matches!(&a.drill[0].data, FrameData::Failed(m) if m.contains("down")));
+        let reqs = drill_requests(&a.on_key(ch('r'), now));
+        assert_eq!(reqs.len(), 1);
+        assert!(matches!(a.drill[0].data, FrameData::Loading));
+        assert_ne!(reqs[0].0, id, "reload gets a new frame id");
+    }
+
+    #[test]
+    fn navigation_clamps_and_enter_opens_row() {
+        let mut a = drilled();
+        let now = Instant::now();
+        a.on_key(k(KeyCode::Up), now);
+        assert_eq!(a.drill[0].selected[0], 0);
+        a.on_key(k(KeyCode::End), now);
+        assert_eq!(a.drill[0].selected[0], 3);
+        a.on_key(k(KeyCode::Down), now);
+        assert_eq!(a.drill[0].selected[0], 3);
+        a.on_key(k(KeyCode::Home), now);
+        let reqs = drill_requests(&a.on_key(k(KeyCode::Enter), now));
+        assert_eq!(
+            reqs[0].1,
+            DrillTarget::EndpointFailures {
+                name: "POST /api/orders".into()
+            }
+        );
+        assert_eq!(a.drill.len(), 2);
+    }
+
+    #[test]
+    fn sort_cycles_columns() {
+        let mut a = drilled();
+        let now = Instant::now();
+        a.on_key(ch('s'), now);
+        assert_eq!(a.drill[0].sort, Some((1, true)));
+        a.on_key(ch('s'), now);
+        assert_eq!(a.drill[0].sort, Some((2, true)));
+        a.on_key(ch('s'), now);
+        a.on_key(ch('s'), now);
+        assert_eq!(a.drill[0].sort, Some((0, false)), "text sorts ascending");
+        let FrameData::Ready(ScreenData::List(l)) = &a.drill[0].data else {
+            panic!()
+        };
+        assert_eq!(
+            l.rows[0].cells[0],
+            crate::data::drill::Cell::Text("GET /api/reports/export".into())
+        );
+    }
+
+    #[test]
+    fn tab_in_drill_clears_and_switches_view() {
+        let mut a = drilled();
+        a.on_key(k(KeyCode::Tab), Instant::now());
+        assert!(a.drill.is_empty());
+        assert_eq!(a.view, View::Failures);
+    }
+
+    #[test]
+    fn range_change_in_drill_returns_to_dashboard() {
+        let mut a = drilled();
+        a.on_key(ch('t'), Instant::now());
+        assert!(a.drill.is_empty());
+        assert_eq!(a.range, TimeRange::H12);
+    }
+
+    #[test]
+    fn drill_targets_for_panels() {
+        assert_eq!(
+            drill_target(PanelId::FailedRequests),
+            Some(DrillTarget::FailingEndpoints)
+        );
+        assert_eq!(
+            drill_target(PanelId::FailuresMain),
+            Some(DrillTarget::FailingEndpoints)
+        );
+        assert_eq!(drill_target(PanelId::Health), None);
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod backend;
 pub mod catalog;
 pub mod dashboard;
 pub mod demo;
+pub mod drill;
 pub mod format;
 pub mod kql;
 pub mod store;
