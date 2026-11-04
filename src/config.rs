@@ -142,6 +142,34 @@ pub fn load(path: &Path) -> (Config, Option<String>) {
     }
 }
 
+/// Saves the settings the app itself manages (refresh interval, range and
+/// remembered instances) into the file as it is on disk now, so labels,
+/// alert thresholds and other hand edits survive. Refuses to write when the
+/// file exists but cannot be read or parsed, rather than replacing it.
+pub fn persist(path: &Path, app: &Config) -> Result<(), String> {
+    let mut merged = match std::fs::read_to_string(path) {
+        Ok(text) => toml::from_str::<Config>(&text).map_err(|e| {
+            format!(
+                "not saving settings: {} has errors ({})",
+                path.display(),
+                e.message()
+            )
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => app.clone(),
+        Err(e) => {
+            return Err(format!(
+                "not saving settings: cannot read {}: {e}",
+                path.display()
+            ));
+        }
+    };
+    merged.refresh_secs = app.refresh_secs;
+    merged.range = app.range;
+    merged.last_instance = app.last_instance.clone();
+    merged.recent = app.recent.clone();
+    save(path, &merged).map_err(|e| format!("could not save {}: {e}", path.display()))
+}
+
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Writes the config atomically: a temp file in the same directory is
@@ -309,6 +337,61 @@ mod tests {
         let (c, warn) = load(&p);
         assert!(warn.is_none());
         assert!(c.refresh_secs == 15 || c.refresh_secs == 300);
+    }
+
+    #[test]
+    fn persist_keeps_hand_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(
+            &p,
+            "refresh_secs = 30\n[alerts]\nfailed_requests_5m = 2\n[labels]\n\"/subscriptions/x/app\" = \"PROD\"\n",
+        )
+        .unwrap();
+        let mut app_cfg = Config {
+            refresh_secs: 60,
+            ..Default::default()
+        };
+        app_cfg.remember(&inst(1));
+        persist(&p, &app_cfg).unwrap();
+        let (back, warn) = load(&p);
+        assert!(warn.is_none());
+        assert_eq!(back.refresh_secs, 60);
+        assert_eq!(back.last_instance.as_ref().unwrap().name, "app-1");
+        assert_eq!(
+            back.alerts.failed_requests_5m, 2.0,
+            "hand-edited alert kept"
+        );
+        assert_eq!(
+            back.label_for("/subscriptions/x/app"),
+            Some("PROD"),
+            "labels kept"
+        );
+    }
+
+    #[test]
+    fn persist_refuses_to_overwrite_an_invalid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "refresh_secs = [[[").unwrap();
+        let err = persist(&p, &Config::default()).unwrap_err();
+        assert!(err.contains("not saving"), "{err}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "refresh_secs = [[[");
+    }
+
+    #[test]
+    fn persist_creates_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("new").join("config.toml");
+        persist(
+            &p,
+            &Config {
+                range: TimeRange::H12,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(load(&p).0.range, TimeRange::H12);
     }
 
     #[test]

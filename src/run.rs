@@ -215,9 +215,9 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, s: Setup) -> Result
                 Command::SaveConfig(cfg) => {
                     if !demo
                         && let Some(p) = &config_path
-                        && let Err(e) = config::save(p, &cfg)
+                        && let Err(e) = config::persist(p, &cfg)
                     {
-                        app.toast(format!("could not save config: {e}"), Instant::now());
+                        app.toast(e, Instant::now());
                     }
                 }
                 Command::Copy(text) => match effects.copy(&text) {
