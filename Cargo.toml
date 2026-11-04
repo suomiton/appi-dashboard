@@ -1,0 +1,30 @@
+[package]
+name = "appi-dashboard"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arboard = "3.7.0"
+async-trait = "0.1.92"
+base64 = "0.23.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+directories = "6.0.0"
+flate2 = "1.1.10"
+futures = "0.3.34"
+open = "5.4.5"
+ratatui = "0.30.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "system-proxy"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "process", "sync"] }
+toml = "1.2.0"
+unicode-width = "0.2.3"
+url = "2.5.8"
+
+[dev-dependencies]
+insta = "1.49.0"
+tempfile = "3.27.0"
+wiremock = "0.6.5"
