@@ -1,0 +1,10 @@
+---
+source: src/data/kql.rs
+expression: summary_scalars()
+---
+let all = union traces, requests, pageViews, dependencies, customEvents, availabilityResults, exceptions, customMetrics, browserTimings;
+print users_5m = toscalar(all | where timestamp > ago(5m) and notempty(user_Id) | summarize dcount(user_Id)),
+      users_range = toscalar(all | where notempty(user_Id) | summarize dcount(user_Id)),
+      sessions_range = toscalar(all | where notempty(session_Id) | summarize dcount(session_Id)),
+      servers_10m = toscalar(union requests, performanceCounters | where timestamp > ago(10m) and notempty(cloud_RoleInstance) | summarize dcount(cloud_RoleInstance)),
+      response_p95_ms = toscalar(requests | summarize percentile(duration, 95))

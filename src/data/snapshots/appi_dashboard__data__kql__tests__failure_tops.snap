@@ -1,0 +1,7 @@
+---
+source: src/data/kql.rs
+expression: failure_tops()
+---
+let eps = requests | where timestamp > ago(15m) and tostring(success) == "False" | summarize n = sum(itemCount) by name | top 5 by n | extend kind = "endpoint", detail = "";
+let exs = exceptions | where timestamp > ago(15m) and client_Type != "Browser" | summarize n = sum(itemCount), detail = take_any(outerMessage) by name = type | top 5 by n | extend kind = "exception";
+union eps, exs | project kind, name, detail, n
