@@ -2,6 +2,13 @@
 name = "appi-dashboard"
 version = "0.1.0"
 edition = "2024"
+description = "A btop-style terminal dashboard for Azure Application Insights"
+repository = "https://github.com/suomiton/appi-dashboard"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["azure", "application-insights", "tui", "monitoring", "dashboard"]
+categories = ["command-line-utilities", "visualization"]
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 [dependencies]
 arboard = "3.7.0"
