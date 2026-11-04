@@ -1,0 +1,14 @@
+{
+  "value": [
+    {
+      "name": {"value": "performanceCounters/processCpuPercentage"},
+      "unit": "Percent",
+      "timeseries": [
+        {"metadatavalues": [{"name": {"value": "cloud/roleinstance"}, "value": "demo-host-0"}],
+         "data": [{"timeStamp": "2026-11-04T10:00:00Z", "average": 1.5}]},
+        {"metadatavalues": [{"name": {"value": "cloud/roleinstance"}, "value": "demo-host-1"}],
+         "data": [{"timeStamp": "2026-11-04T10:00:00Z", "average": 0.5}]}
+      ]
+    }
+  ]
+}

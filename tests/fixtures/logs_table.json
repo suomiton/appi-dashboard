@@ -1,0 +1,18 @@
+{
+  "tables": [
+    {
+      "name": "PrimaryResult",
+      "columns": [
+        {"name": "timestamp", "type": "datetime"},
+        {"name": "name", "type": "string"},
+        {"name": "duration", "type": "real"},
+        {"name": "n", "type": "long"},
+        {"name": "details", "type": "dynamic"}
+      ],
+      "rows": [
+        ["2026-11-04T13:58:12.123Z", "POST /api/orders", "3.38", 12, [{"parsedStack": []}]],
+        ["2026-11-04T13:57:40Z", "GET /api/reports/export", 30010.5, null, null]
+      ]
+    }
+  ]
+}

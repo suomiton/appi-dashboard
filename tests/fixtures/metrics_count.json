@@ -1,0 +1,28 @@
+{
+  "cost": 0,
+  "timespan": "2026-11-04T10:00:00Z/2026-11-04T14:00:00Z",
+  "interval": "PT5M",
+  "value": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/demo-rg/providers/microsoft.insights/components/demo-app-prod/providers/Microsoft.Insights/metrics/requests/failed",
+      "type": "Microsoft.Insights/metrics",
+      "name": {"value": "requests/failed", "localizedValue": "Failed requests"},
+      "unit": "Count",
+      "timeseries": [
+        {"metadatavalues": [], "data": [
+          {"timeStamp": "2026-11-04T10:00:00Z", "count": 3.0},
+          {"timeStamp": "2026-11-04T10:05:00Z"}
+        ]}
+      ]
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/demo-rg/providers/microsoft.insights/components/demo-app-prod/providers/Microsoft.Insights/metrics/requests/count",
+      "type": "Microsoft.Insights/metrics",
+      "name": {"value": "requests/count", "localizedValue": "Server requests"},
+      "unit": "Count",
+      "timeseries": []
+    }
+  ],
+  "namespace": "microsoft.insights/components",
+  "resourceregion": "westeurope"
+}

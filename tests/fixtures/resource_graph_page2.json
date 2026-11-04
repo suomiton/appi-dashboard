@@ -1,0 +1,7 @@
+{
+  "totalRecords": 4,
+  "count": 1,
+  "data": [
+    {"name": "demo-func-prod", "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/demo-rg/providers/microsoft.insights/components/demo-func-prod", "resourceGroup": "demo-rg", "subscriptionId": "00000000-0000-0000-0000-000000000000", "subscriptionName": null, "tenantId": "00000000-0000-0000-0000-000000000000", "location": "northeurope", "appId": "33333333-3333-3333-3333-333333333333"}
+  ]
+}
