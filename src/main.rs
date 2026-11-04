@@ -1,4 +1,7 @@
+use clap::Parser;
+
 fn main() {
+    let _cli = appi_dashboard::cli::Cli::parse();
     println!("appi-dashboard {}", env!("CARGO_PKG_VERSION"));
 }
 
