@@ -597,6 +597,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn slow_response_tile_shows_seconds() {
+        let (mut app, mono) = demo_app(View::Overview);
+        app.store
+            .totals
+            .get_mut(&SeriesId::ServerResponse)
+            .unwrap()
+            .value = 1500.0;
+        let t = render(&app, mono, 160, 45);
+        let tile = rect_text(
+            &t,
+            layout::overview_layout(Rect::new(0, 0, 160, 45)).kpis[5],
+        );
+        assert!(tile.contains("s avg") && !tile.contains("ms"), "{tile}");
+        assert!(
+            tile.contains(&crate::ui::widgets::bigdigits::big_text("1.5")[0]),
+            "{tile}"
+        );
+    }
+
+    #[test]
     fn long_names_do_not_panic() {
         let (mut app, mono) = demo_app(View::Failures);
         if let Some(t) = app.store.tops.as_mut() {

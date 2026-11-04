@@ -74,8 +74,18 @@ fn kpis(ctx: &Ctx) -> Vec<Kpi> {
         },
         Kpi {
             title: "response",
-            value: ctx.total(SeriesId::ServerResponse),
-            label: "ms avg".into(),
+            // Seconds once it reaches 1 s, so the tile never reads "1.5 k ms".
+            value: ctx
+                .total(SeriesId::ServerResponse)
+                .map(|ms| if ms >= 1000.0 { ms / 1000.0 } else { ms }),
+            label: if ctx
+                .total(SeriesId::ServerResponse)
+                .is_some_and(|ms| ms >= 1000.0)
+            {
+                "s avg".into()
+            } else {
+                "ms avg".into()
+            },
             color: palette::YELLOW,
             alert: false,
         },
@@ -145,7 +155,10 @@ fn kpi_strip(buf: &mut Buffer, area: Rect, ctx: &Ctx, all: &[Kpi]) {
         spans.push(ctx.s(format!("{short} "), palette::SOFT));
         let v = match (k.title, k.value) {
             (_, None) => "—".to_string(),
-            ("response", Some(v)) => fmt_ms(v),
+            ("response", Some(_)) => ctx
+                .total(SeriesId::ServerResponse)
+                .map(fmt_ms)
+                .unwrap_or_else(|| "—".into()),
             ("availability", Some(v)) => format!("{}%", fmt_num(v)),
             (_, Some(v)) => fmt_num(v),
         };
