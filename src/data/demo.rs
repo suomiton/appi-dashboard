@@ -257,7 +257,7 @@ impl Backend for DemoBackend {
         }
         if kql_text == kql::failure_tops() {
             return Ok(table(
-                &["kind", "name", "detail", "n"],
+                &["section", "name", "detail", "n"],
                 vec![
                     json!(["endpoint", "POST /api/orders", "", 12]),
                     json!(["endpoint", "GET /api/reports/export", "", 2]),

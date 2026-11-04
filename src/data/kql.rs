@@ -43,9 +43,9 @@ pub fn users_sessions_series(range: TimeRange) -> String {
 }
 
 pub fn failure_tops() -> String {
-    "let eps = requests | where timestamp > ago(15m) and tostring(success) == \"False\" | summarize n = sum(itemCount) by name | top 5 by n | extend kind = \"endpoint\", detail = \"\";
-let exs = exceptions | where timestamp > ago(15m) and client_Type != \"Browser\" | summarize n = sum(itemCount), detail = take_any(outerMessage) by name = type | top 5 by n | extend kind = \"exception\";
-union eps, exs | project kind, name, detail, n"
+    "let eps = requests | where timestamp > ago(15m) and tostring(success) == \"False\" | summarize n = sum(itemCount) by name | top 5 by n | extend section = \"endpoint\", detail = \"\";
+let exs = exceptions | where timestamp > ago(15m) and client_Type != \"Browser\" | summarize n = sum(itemCount), detail = take_any(outerMessage) by name = type | top 5 by n | extend section = \"exception\";
+union eps, exs | project section, name, detail, n"
         .to_string()
 }
 
@@ -147,6 +147,14 @@ mod tests {
         assert!(request_exceptions("op1").contains(r#"operation_Id == "op1""#));
         assert!(transaction("op1").contains(r#"operation_Id == "op1""#));
         assert!(ALL_TABLES.starts_with("union traces, requests, pageViews"));
+    }
+
+    /// `kind` is a reserved word in KQL (`join kind=...`); using it as a
+    /// column name makes the App Insights API reject the whole query.
+    #[test]
+    fn failure_tops_avoids_reserved_word_kind() {
+        assert!(!failure_tops().contains("kind"));
+        assert!(failure_tops().contains("section"));
     }
 
     #[test]

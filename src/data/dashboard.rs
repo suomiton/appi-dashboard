@@ -300,7 +300,7 @@ fn parse_tops(t: &Table) -> FailureTops {
             detail: t.str(row, "detail").unwrap_or_default().to_string(),
             n: t.f64(row, "n").unwrap_or(0.0),
         };
-        match t.str(row, "kind") {
+        match t.str(row, "section") {
             Some("endpoint") => tops.endpoints.push(item),
             Some("exception") => tops.exceptions.push(item),
             _ => {}
@@ -400,7 +400,7 @@ pub(crate) mod tests {
             .with_query(
                 kql::failure_tops(),
                 Ok(table(
-                    &["kind", "name", "detail", "n"],
+                    &["section", "name", "detail", "n"],
                     vec![
                         json!(["endpoint", "POST /api/orders", "", 12]),
                         json!(["endpoint", "GET /api/reports/export", "", 2]),
