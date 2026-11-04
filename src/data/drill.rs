@@ -149,9 +149,273 @@ pub struct EndpointData {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct RequestInfo {
+    pub at: DateTime<Utc>,
+    pub name: String,
+    pub code: String,
+    pub duration_ms: f64,
+    pub success: Option<bool>,
+    pub instance: String,
+    pub operation_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub user_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExceptionInfo {
+    pub exception_type: String,
+    pub message: String,
+    pub frames: Vec<String>,
+}
+
+/// One request or dependency in an operation, as queried.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TxRow {
+    pub at: DateTime<Utc>,
+    pub item_type: String,
+    pub name: String,
+    pub dep_type: String,
+    pub target: String,
+    pub duration_ms: f64,
+    pub success: Option<bool>,
+    pub code: String,
+    pub id: String,
+    pub parent_id: String,
+}
+
+/// One line of the end-to-end transaction timeline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TxNode {
+    pub depth: usize,
+    pub label: String,
+    pub offset_ms: f64,
+    pub duration_ms: f64,
+    pub success: Option<bool>,
+    pub code: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RequestData {
+    pub request: Option<RequestInfo>,
+    pub exception: Option<ExceptionInfo>,
+    pub transaction: Vec<TxNode>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum ScreenData {
     List(ListData),
     Endpoint(EndpointData),
+    Request(RequestData),
+}
+
+pub fn parse_success(s: &str) -> Option<bool> {
+    match s.trim() {
+        "True" | "true" | "1" => Some(true),
+        "False" | "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Orders an operation's rows into a parent → child tree, depth first,
+/// children by start time. Rows whose parent is not present are roots;
+/// a visited set keeps cycles from looping.
+pub fn build_tree(mut rows: Vec<TxRow>) -> Vec<TxNode> {
+    rows.sort_by_key(|r| r.at);
+    let start = rows.first().map(|r| r.at);
+    let ids: std::collections::HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    let mut children: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut roots = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        if r.parent_id != r.id && ids.contains(r.parent_id.as_str()) {
+            children.entry(r.parent_id.as_str()).or_default().push(i);
+        } else {
+            roots.push(i);
+        }
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    let mut visited = vec![false; rows.len()];
+    fn walk(
+        i: usize,
+        depth: usize,
+        rows: &[TxRow],
+        children: &HashMap<&str, Vec<usize>>,
+        visited: &mut [bool],
+        out: &mut Vec<(usize, usize)>,
+    ) {
+        if visited[i] {
+            return;
+        }
+        visited[i] = true;
+        out.push((i, depth));
+        if let Some(kids) = children.get(rows[i].id.as_str()) {
+            for &k in kids {
+                walk(k, depth + 1, rows, children, visited, out);
+            }
+        }
+    }
+    let mut order = Vec::new();
+    for &r in &roots {
+        walk(r, 0, &rows, &children, &mut visited, &mut order);
+    }
+    // Rows only reachable through a cycle become roots themselves.
+    for i in 0..rows.len() {
+        walk(i, 0, &rows, &children, &mut visited, &mut order);
+    }
+    for (i, depth) in order {
+        let r = &rows[i];
+        let label = if r.item_type == "dependency" {
+            format!("{} {} {}", r.dep_type, r.target, r.name)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            r.name.clone()
+        };
+        out.push(TxNode {
+            depth,
+            label,
+            offset_ms: start.map_or(0.0, |s| (r.at - s).num_milliseconds() as f64),
+            duration_ms: r.duration_ms,
+            success: r.success,
+            code: r.code.clone(),
+        });
+    }
+    out
+}
+
+/// Readable stack frames from an exception's `details` (an array, or a
+/// string holding one): `parsedStack` when present, else `rawStack` lines.
+pub fn stack_frames(details: &serde_json::Value, max: usize) -> Vec<String> {
+    let parsed;
+    let details = match details {
+        serde_json::Value::String(s) => match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(v) => {
+                parsed = v;
+                &parsed
+            }
+            Err(_) => return Vec::new(),
+        },
+        other => other,
+    };
+    let Some(items) = details.as_array() else {
+        return Vec::new();
+    };
+    for item in items {
+        if let Some(stack) = item.get("parsedStack").and_then(|p| p.as_array())
+            && !stack.is_empty()
+        {
+            return stack
+                .iter()
+                .take(max)
+                .map(|f| {
+                    let method = f.get("method").and_then(|m| m.as_str()).unwrap_or("?");
+                    let file = f.get("fileName").and_then(|m| m.as_str()).unwrap_or("");
+                    let line = f.get("line").and_then(|l| l.as_i64()).unwrap_or(0);
+                    match (file.is_empty(), line) {
+                        (true, _) => format!("at {method}"),
+                        (false, 0) => format!("at {method}  {file}"),
+                        (false, l) => format!("at {method}  {file}:{l}"),
+                    }
+                })
+                .collect();
+        }
+    }
+    for item in items {
+        if let Some(raw) = item.get("rawStack").and_then(|r| r.as_str()) {
+            return raw
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .take(max)
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn pct(s: &str) -> String {
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// A portal Logs link that opens `kql` on the App Insights resource.
+pub fn portal_logs_link(tenant_id: &str, resource_id: &str, kql: &str, timespan: &str) -> String {
+    use base64::Engine;
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let _ = gz.write_all(kql.as_bytes());
+    let bytes = gz.finish().unwrap_or_default();
+    let q = base64::engine::general_purpose::STANDARD.encode(bytes);
+    format!(
+        "https://portal.azure.com/#@{tenant_id}/blade/Microsoft_OperationsManagementSuite_Workspace/Logs.ReactView/resourceId/{}/source/LogsBlade.AnalyticsShareLinkToQuery/q/{}/timespan/{timespan}",
+        pct(resource_id),
+        pct(&q)
+    )
+}
+
+pub fn portal_resource_link(tenant_id: &str, resource_id: &str) -> String {
+    format!("https://portal.azure.com/#@{tenant_id}/resource{resource_id}/overview")
+}
+
+fn request_data(row: &Table, exceptions: &Table, tx: &Table) -> RequestData {
+    let s = |t: &Table, r: usize, c: &str| t.str(r, c).unwrap_or_default().to_string();
+    let request = row.time(0, "timestamp").map(|at| RequestInfo {
+        at,
+        name: s(row, 0, "name"),
+        code: s(row, 0, "resultCode"),
+        duration_ms: row.f64(0, "duration").unwrap_or(0.0),
+        success: parse_success(&s(row, 0, "success")),
+        instance: s(row, 0, "cloud_RoleInstance"),
+        operation_id: s(row, 0, "operation_Id"),
+        request_id: s(row, 0, "id"),
+        session_id: s(row, 0, "session_Id"),
+        user_id: s(row, 0, "user_Id"),
+    });
+    let exception = (!exceptions.is_empty()).then(|| {
+        let outer = s(exceptions, 0, "outerMessage");
+        ExceptionInfo {
+            exception_type: s(exceptions, 0, "type"),
+            message: if outer.is_empty() {
+                s(exceptions, 0, "innermostMessage")
+            } else {
+                outer
+            },
+            frames: exceptions
+                .json(0, "details")
+                .map(|d| stack_frames(d, 8))
+                .unwrap_or_default(),
+        }
+    });
+    let rows = (0..tx.len())
+        .filter_map(|r| {
+            Some(TxRow {
+                at: tx.time(r, "timestamp")?,
+                item_type: s(tx, r, "itemType"),
+                name: s(tx, r, "name"),
+                dep_type: s(tx, r, "type"),
+                target: s(tx, r, "target"),
+                duration_ms: tx.f64(r, "duration").unwrap_or(0.0),
+                success: parse_success(&s(tx, r, "success")),
+                code: s(tx, r, "resultCode"),
+                id: s(tx, r, "id"),
+                parent_id: s(tx, r, "operation_ParentId"),
+            })
+        })
+        .collect();
+    RequestData {
+        request,
+        exception,
+        transaction: build_tree(rows),
+    }
 }
 
 /// Builds the endpoint screen from its three query results.
@@ -219,6 +483,22 @@ pub async fn load(
                 backend.query(&inst.app_id, &r, range.iso()),
             );
             Ok(ScreenData::Endpoint(endpoint_data(name, &e?, &d?, &r?)))
+        }
+        DrillTarget::RequestDetail {
+            operation_id,
+            request_id,
+        } => {
+            let (r, e, t) = (
+                kql::request_row(operation_id, request_id.as_deref()),
+                kql::request_exceptions(operation_id),
+                kql::transaction(operation_id),
+            );
+            let (r, e, t) = tokio::join!(
+                backend.query(&inst.app_id, &r, range.iso()),
+                backend.query(&inst.app_id, &e, range.iso()),
+                backend.query(&inst.app_id, &t, range.iso()),
+            );
+            Ok(ScreenData::Request(request_data(&r?, &e?, &t?)))
         }
         _ => Err(AzError::Decode("not implemented".into())),
     }
@@ -472,6 +752,164 @@ pub(crate) mod tests {
             .unwrap();
         assert!(matches!(data, ScreenData::Endpoint(d) if d.recent.len() == 2));
         assert_eq!(b.calls().len(), 3);
+    }
+
+    fn tx(id: &str, parent: &str, at_ms: i64, item: &str, name: &str) -> TxRow {
+        use chrono::TimeZone;
+        TxRow {
+            at: Utc.with_ymd_and_hms(2026, 11, 4, 12, 0, 0).unwrap()
+                + chrono::Duration::milliseconds(at_ms),
+            item_type: item.into(),
+            name: name.into(),
+            dep_type: if item == "dependency" {
+                "SQL".into()
+            } else {
+                String::new()
+            },
+            target: if item == "dependency" {
+                "appdb".into()
+            } else {
+                String::new()
+            },
+            duration_ms: 10.0,
+            success: Some(true),
+            code: "200".into(),
+            id: id.into(),
+            parent_id: parent.into(),
+        }
+    }
+
+    #[test]
+    fn build_tree_orders_depth_first() {
+        let nodes = build_tree(vec![
+            tx("d2", "r1", 10, "dependency", "d2"),
+            tx("r1", "op", 0, "request", "R"),
+            tx("d3", "d1", 6, "dependency", "d3"),
+            tx("d1", "r1", 5, "dependency", "d1"),
+        ]);
+        let labels: Vec<&str> = nodes.iter().map(|n| n.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["R", "SQL appdb d1", "SQL appdb d3", "SQL appdb d2"]
+        );
+        assert_eq!(
+            nodes.iter().map(|n| n.depth).collect::<Vec<_>>(),
+            [0, 1, 2, 1]
+        );
+        assert_eq!(
+            nodes.iter().map(|n| n.offset_ms).collect::<Vec<_>>(),
+            [0.0, 5.0, 6.0, 10.0]
+        );
+    }
+
+    #[test]
+    fn build_tree_handles_orphans_and_cycles() {
+        let nodes = build_tree(vec![
+            tx("a", "b", 0, "request", "a"),
+            tx("b", "a", 1, "request", "b"),
+            tx("c", "missing", 2, "request", "c"),
+        ]);
+        assert_eq!(nodes.len(), 3);
+        let mut labels: Vec<&str> = nodes.iter().map(|n| n.label.as_str()).collect();
+        labels.sort();
+        assert_eq!(labels, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn stack_frames_from_parsed_stack() {
+        let details = json!([{"parsedStack": [
+            {"level": 0, "method": "Demo.OrderService.SaveAsync", "fileName": "OrderService.cs", "line": 142},
+            {"level": 1, "method": "Demo.OrdersController.Create", "line": 0},
+        ]}]);
+        assert_eq!(
+            stack_frames(&details, 8),
+            [
+                "at Demo.OrderService.SaveAsync  OrderService.cs:142",
+                "at Demo.OrdersController.Create",
+            ]
+        );
+    }
+
+    #[test]
+    fn stack_frames_from_json_string_and_raw_stack() {
+        let as_string = serde_json::Value::String(
+            r#"[{"parsedStack":[{"method":"M","fileName":"F.cs","line":3}]}]"#.into(),
+        );
+        assert_eq!(stack_frames(&as_string, 8), ["at M  F.cs:3"]);
+        let raw =
+            json!([{"rawStack": "Error: boom\n    at f (app.js:1:2)\n\n    at g (app.js:3:4)\n"}]);
+        assert_eq!(stack_frames(&raw, 2), ["Error: boom", "at f (app.js:1:2)"]);
+        assert!(stack_frames(&json!(null), 8).is_empty());
+    }
+
+    #[test]
+    fn stack_frames_respects_max() {
+        let frames: Vec<_> = (0..20)
+            .map(|i| json!({"method": format!("m{i}")}))
+            .collect();
+        assert_eq!(stack_frames(&json!([{"parsedStack": frames}]), 5).len(), 5);
+    }
+
+    #[test]
+    fn parse_success_variants() {
+        for t in ["True", "true", "1"] {
+            assert_eq!(parse_success(t), Some(true));
+        }
+        for f in ["False", "false", "0"] {
+            assert_eq!(parse_success(f), Some(false));
+        }
+        assert_eq!(parse_success(""), None);
+    }
+
+    #[test]
+    fn portal_logs_link_roundtrip() {
+        use base64::Engine;
+        use std::io::Read;
+        let kql = "union requests, dependencies | where operation_Id == \"op-1\"";
+        let rid = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/demo-rg/providers/microsoft.insights/components/demo-app-prod";
+        let link = portal_logs_link("tenant-1", rid, kql, "PT4H");
+        assert!(link.starts_with("https://portal.azure.com/#@tenant-1/blade/Microsoft_OperationsManagementSuite_Workspace/Logs.ReactView/resourceId/%2Fsubscriptions%2F"));
+        assert!(link.ends_with("/timespan/PT4H"));
+        let q = link.split("/q/").nth(1).unwrap().split('/').next().unwrap();
+        let decoded = url::form_urlencoded::parse(format!("x={q}").as_bytes())
+            .next()
+            .unwrap()
+            .1
+            .to_string();
+        let gz = base64::engine::general_purpose::STANDARD
+            .decode(decoded)
+            .unwrap();
+        let mut out = String::new();
+        flate2::read::GzDecoder::new(&gz[..])
+            .read_to_string(&mut out)
+            .unwrap();
+        assert_eq!(out, kql);
+        assert_eq!(
+            portal_resource_link("tenant-1", rid),
+            format!("https://portal.azure.com/#@tenant-1/resource{rid}/overview")
+        );
+    }
+
+    #[tokio::test]
+    async fn load_request_detail_builds_all_parts() {
+        let b = crate::data::demo::DemoBackend::new();
+        let inst = crate::data::demo::demo_instances().remove(0);
+        let target = DrillTarget::RequestDetail {
+            operation_id: "op-7f3a9c2e".into(),
+            request_id: Some("req-0001".into()),
+        };
+        let ScreenData::Request(r) = load(&b, &inst, TimeRange::H4, &target, chrono::Utc::now())
+            .await
+            .unwrap()
+        else {
+            panic!("expected request data")
+        };
+        let req = r.request.unwrap();
+        assert_eq!(req.code, "500");
+        assert_eq!(req.success, Some(false));
+        assert_eq!(r.exception.unwrap().exception_type, "SqlException");
+        assert_eq!(r.transaction.len(), 3);
+        assert_eq!(r.transaction[0].depth, 0);
     }
 
     #[test]

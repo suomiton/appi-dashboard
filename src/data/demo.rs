@@ -210,12 +210,148 @@ const DEMO_ENDPOINTS: [&str; 4] = [
     "GET /api/sites/{id}/readings",
 ];
 
+/// (operation ID, request ID, minutes ago) of the demo's failed requests.
+const DEMO_REQUESTS: [(&str, &str, i64); 4] = [
+    ("op-7f3a9c2e", "req-0001", 8),
+    ("op-1b8e4c1d", "req-0002", 9),
+    ("op-4c1d7f3a", "req-0003", 15),
+    ("op-9a0b1c2d", "req-0004", 20),
+];
+
 const SQL_TIMEOUT: &str = "Execution Timeout Expired. The timeout period elapsed prior to completion of the operation or the server is not responding.";
 const BAD_GATEWAY: &str = "Response status code does not indicate success: 502 (Bad Gateway).";
 
 impl DemoBackend {
     fn now(&self) -> DateTime<Utc> {
         self.fixed_now.unwrap_or_else(Utc::now)
+    }
+
+    fn request_start(&self, op: &str) -> DateTime<Utc> {
+        let mins = DEMO_REQUESTS
+            .iter()
+            .find(|(o, _, _)| *o == op)
+            .map_or(10, |(_, _, m)| *m);
+        self.now() - Duration::minutes(mins) - Duration::seconds(30)
+    }
+
+    fn request_row(&self, op: &str) -> Table {
+        let (req, code, duration) = match op {
+            "op-4c1d7f3a" => ("req-0003", "502", 2100.0),
+            "op-9a0b1c2d" => ("req-0004", "504", 60000.0),
+            "op-1b8e4c1d" => ("req-0002", "500", 30010.0),
+            _ => ("req-0001", "500", 30020.0),
+        };
+        table(
+            &[
+                "timestamp",
+                "name",
+                "resultCode",
+                "duration",
+                "success",
+                "cloud_RoleInstance",
+                "operation_Id",
+                "id",
+                "session_Id",
+                "user_Id",
+            ],
+            vec![json!([
+                self.request_start(op).to_rfc3339(),
+                DEMO_ENDPOINTS[0],
+                code,
+                duration,
+                "False",
+                "demo-host-1",
+                op,
+                req,
+                "1b8e0c2f4a6d",
+                "4c1d9e8f7a6b"
+            ])],
+        )
+    }
+
+    fn request_exceptions(&self, op: &str) -> Table {
+        let (ty, msg) = if op == "op-4c1d7f3a" {
+            ("HttpRequestException", BAD_GATEWAY)
+        } else {
+            ("SqlException", SQL_TIMEOUT)
+        };
+        let details = json!([{"parsedStack": [
+            {"level": 0, "method": "Demo.Orders.OrderService.SaveBatchAsync", "fileName": "OrderService.cs", "line": 142},
+            {"level": 1, "method": "Demo.Orders.OrdersController.Create", "fileName": "OrdersController.cs", "line": 58}
+        ]}]);
+        table(
+            &[
+                "timestamp",
+                "type",
+                "outerMessage",
+                "innermostMessage",
+                "details",
+            ],
+            vec![json!([
+                self.request_start(op).to_rfc3339(),
+                ty,
+                msg,
+                msg,
+                details
+            ])],
+        )
+    }
+
+    fn transaction(&self, op: &str) -> Table {
+        let t0 = self.request_start(op);
+        let at = |ms: i64| (t0 + Duration::milliseconds(ms)).to_rfc3339();
+        table(
+            &[
+                "timestamp",
+                "itemType",
+                "name",
+                "type",
+                "target",
+                "duration",
+                "success",
+                "resultCode",
+                "id",
+                "operation_ParentId",
+            ],
+            vec![
+                json!([
+                    at(0),
+                    "request",
+                    DEMO_ENDPOINTS[0],
+                    "",
+                    "",
+                    30020.0,
+                    "False",
+                    "500",
+                    "req-0001",
+                    op
+                ]),
+                json!([
+                    at(15),
+                    "dependency",
+                    "INSERT orders",
+                    "SQL",
+                    "appdb",
+                    29950.0,
+                    "False",
+                    "-2",
+                    "dep-1",
+                    "req-0001"
+                ]),
+                json!([
+                    at(29980),
+                    "dependency",
+                    "PUT uploads/batch.json",
+                    "Azure blob",
+                    "demostorage",
+                    60.0,
+                    "True",
+                    "201",
+                    "dep-2",
+                    "req-0001"
+                ]),
+            ],
+        )
     }
 
     fn endpoint_exceptions(&self, name: &str) -> Table {
@@ -423,6 +559,18 @@ impl Backend for DemoBackend {
                 .find(|r| r.iso() == timespan)
                 .unwrap_or_default();
             return Ok(self.failing_endpoints(range));
+        }
+        for (op, req, _) in DEMO_REQUESTS {
+            if kql_text == kql::request_row(op, Some(req)) || kql_text == kql::request_row(op, None)
+            {
+                return Ok(self.request_row(op));
+            }
+            if kql_text == kql::request_exceptions(op) {
+                return Ok(self.request_exceptions(op));
+            }
+            if kql_text == kql::transaction(op) {
+                return Ok(self.transaction(op));
+            }
         }
         for name in DEMO_ENDPOINTS {
             if kql_text == kql::endpoint_exceptions(name) {

@@ -494,7 +494,36 @@ impl App {
 
     /// Keys while a drill-down screen is open. `None` means "not a drill
     /// key": the dashboard handles it (quit, help, interval, range…).
+    /// `c` copies the operation ID on a request screen; `o` opens the
+    /// request's transaction in the portal's Logs, or the resource overview.
+    fn drill_action(&self, c: char) -> Vec<Command> {
+        let (Some(frame), Some(inst)) = (self.drill.last(), self.instance.as_ref()) else {
+            return Vec::new();
+        };
+        match (c, &frame.target) {
+            ('c', DrillTarget::RequestDetail { operation_id, .. }) => {
+                vec![Command::Copy(operation_id.clone())]
+            }
+            ('o', DrillTarget::RequestDetail { operation_id, .. }) => {
+                vec![Command::OpenUrl(crate::data::drill::portal_logs_link(
+                    &inst.tenant_id,
+                    &inst.resource_id,
+                    &crate::data::kql::transaction(operation_id),
+                    self.range.iso(),
+                ))]
+            }
+            ('o', _) => vec![Command::OpenUrl(crate::data::drill::portal_resource_link(
+                &inst.tenant_id,
+                &inst.resource_id,
+            ))],
+            _ => Vec::new(),
+        }
+    }
+
     fn on_drill_key(&mut self, key: KeyEvent) -> Option<Vec<Command>> {
+        if let KeyCode::Char(c @ ('c' | 'o')) = key.code {
+            return Some(self.drill_action(c));
+        }
         let f = self.drill.last_mut()?;
         let rows = f.rows();
         let sel = &mut f.selected[f.sub];
@@ -1392,6 +1421,51 @@ pub(crate) mod tests {
                 operation_id: "op-2".into(),
                 request_id: Some("req-2".into())
             }
+        );
+    }
+
+    fn request_app() -> App {
+        let mut a = drilled();
+        endpoint_frame(&mut a);
+        let now = Instant::now();
+        let cmds = a.on_key(k(KeyCode::Enter), now);
+        let id = drill_requests(&cmds)[0].0;
+        let data = crate::data::drill::RequestData {
+            request: None,
+            exception: None,
+            transaction: vec![],
+        };
+        a.on_data(
+            DataEvent::Drill {
+                frame_id: id,
+                result: Ok(ScreenData::Request(data)),
+            },
+            now,
+            wall(),
+        );
+        a
+    }
+
+    #[test]
+    fn c_copies_operation_id() {
+        let mut a = request_app();
+        let cmds = a.on_key(ch('c'), Instant::now());
+        assert!(matches!(cmds.as_slice(), [Command::Copy(op)] if op == "op-1"));
+    }
+
+    #[test]
+    fn o_opens_logs_link_on_request_and_resource_link_elsewhere() {
+        let mut a = request_app();
+        let cmds = a.on_key(ch('o'), Instant::now());
+        assert!(
+            matches!(cmds.as_slice(), [Command::OpenUrl(u)] if u.contains("Logs.ReactView") && u.contains("/timespan/PT4H"))
+        );
+        a.on_key(k(KeyCode::Esc), Instant::now());
+        let cmds = a.on_key(ch('o'), Instant::now());
+        assert!(matches!(cmds.as_slice(), [Command::OpenUrl(u)] if u.ends_with("/overview")));
+        assert!(
+            a.on_key(ch('c'), Instant::now()).is_empty(),
+            "c only on request detail"
         );
     }
 

@@ -6,7 +6,9 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::app::{DrillFrame, FrameData, View};
-use crate::data::drill::{Cell, EndpointData, ListData, NumFmt, ScreenData, Severity};
+use crate::data::drill::{
+    Cell, DrillTarget, EndpointData, ListData, NumFmt, RequestData, ScreenData, Severity, TxNode,
+};
 use crate::data::format::{fmt_bytes, fmt_ms, fmt_num, truncate_width};
 use crate::ui::common::{Ctx, put_centered, put_line};
 use crate::ui::theme::{Rgb, palette};
@@ -33,6 +35,7 @@ pub fn render(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
             ),
             FrameData::Ready(ScreenData::List(l)) => list_screen(buf, body, ctx, frame, l),
             FrameData::Ready(ScreenData::Endpoint(e)) => endpoint_screen(buf, body, ctx, frame, e),
+            FrameData::Ready(ScreenData::Request(r)) => request_screen(buf, body, ctx, r),
         }
     }
     footer_keys(buf, footer, ctx);
@@ -61,7 +64,19 @@ pub(crate) fn footer_keys(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
         );
         return;
     }
-    let keys: &[(&str, &str)] = &[
+    let on_request = ctx
+        .app
+        .drill
+        .last()
+        .is_some_and(|f| matches!(f.target, DrillTarget::RequestDetail { .. }));
+    let request_keys: &[(&str, &str)] = &[
+        ("c", "copy operation_Id"),
+        ("o", "open in Azure portal"),
+        ("r", "reload"),
+        ("esc", "back"),
+        ("tab", "switch view"),
+    ];
+    let list_keys: &[(&str, &str)] = &[
         ("↑↓", "select"),
         ("↵", "open"),
         ("s", "sort"),
@@ -70,6 +85,7 @@ pub(crate) fn footer_keys(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
         ("esc", "back"),
         ("tab", "switch view"),
     ];
+    let keys = if on_request { request_keys } else { list_keys };
     let mut spans = vec![ctx.s(" ", palette::DIM)];
     for (k, label) in keys {
         spans.push(ctx.s(*k, palette::ORANGE));
@@ -382,5 +398,171 @@ fn endpoint_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, frame: &DrillFrame, 
         if frame.sub == 2 && i == sel(2) {
             mark_selected(buf, inner, y, ctx);
         }
+    }
+}
+
+/// Splits `text` into at most `max_lines` lines of `width` columns.
+fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if unicode_width::UnicodeWidthStr::width(candidate.as_str()) > width && !current.is_empty()
+        {
+            lines.push(std::mem::take(&mut current));
+            current = word.to_string();
+        } else {
+            current = candidate;
+        }
+        if lines.len() == max_lines {
+            break;
+        }
+    }
+    if !current.is_empty() && lines.len() < max_lines {
+        lines.push(current);
+    }
+    lines
+        .into_iter()
+        .map(|l| truncate_width(&l, width))
+        .collect()
+}
+
+/// Whether each node is the last child at its depth (for └ vs ├).
+fn last_flags(nodes: &[TxNode]) -> Vec<bool> {
+    (0..nodes.len())
+        .map(|i| {
+            let d = nodes[i].depth;
+            nodes[i + 1..]
+                .iter()
+                .find(|n| n.depth <= d)
+                .is_none_or(|n| n.depth < d)
+        })
+        .collect()
+}
+
+fn request_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, r: &RequestData) {
+    let frames = r.exception.as_ref().map_or(0, |e| e.frames.len()) as u16;
+    let wanted = 2 + 2 + if r.exception.is_some() { 5 + frames } else { 0 };
+    let top_h = wanted.min(area.height * 60 / 100).max(5).min(area.height);
+    let top = Rect::new(area.x, area.y, area.width, top_h);
+    let bottom = Rect::new(area.x, area.y + top_h, area.width, area.height - top_h);
+
+    let inner = sub_panel(buf, top, ctx, "request", false);
+    let w = inner.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    match &r.request {
+        None => lines.push(Line::from(
+            ctx.s(" request not found in this time range", palette::DIM),
+        )),
+        Some(q) => {
+            lines.push(Line::from(vec![
+                ctx.s(" result ", palette::DIM),
+                ctx.s(q.code.clone(), code_color(&q.code)),
+                ctx.s("   duration ", palette::DIM),
+                ctx.s(fmt_ms(q.duration_ms), palette::TEXT),
+                ctx.s("   instance ", palette::DIM),
+                ctx.s(q.instance.clone(), palette::TEXT),
+                ctx.s("   at ", palette::DIM),
+                ctx.s(
+                    q.at.with_timezone(&ctx.offset)
+                        .format("%H:%M:%S")
+                        .to_string(),
+                    palette::TEXT,
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                ctx.s(" operation_Id ", palette::DIM),
+                ctx.s(q.operation_id.clone(), palette::TEXT),
+                ctx.s("   session ", palette::DIM),
+                ctx.s(truncate_width(&q.session_id, 12), palette::TEXT),
+                ctx.s("   user ", palette::DIM),
+                ctx.s(truncate_width(&q.user_id, 12), palette::TEXT),
+            ]));
+        }
+    }
+    if let Some(e) = &r.exception {
+        lines.push(Line::default());
+        lines.push(Line::from(
+            ctx.s(format!(" {}", e.exception_type), palette::PURPLE),
+        ));
+        for l in wrap(&e.message, w.saturating_sub(2), 3) {
+            lines.push(Line::from(ctx.s(format!("   {l}"), palette::TEXT)));
+        }
+        for f in &e.frames {
+            let rest = f.strip_prefix("at ").unwrap_or(f);
+            lines.push(Line::from(vec![
+                ctx.s("   at ", palette::DIM),
+                ctx.s(truncate_width(rest, w.saturating_sub(5)), palette::SOFT),
+            ]));
+        }
+    }
+    for (i, l) in lines.iter().enumerate().take(inner.height as usize) {
+        put_line(buf, inner, i as u16, l);
+    }
+
+    let inner = sub_panel(buf, bottom, ctx, "end-to-end transaction", false);
+    if r.transaction.is_empty() {
+        put_line(
+            buf,
+            inner,
+            0,
+            &Line::from(ctx.s(" no telemetry for this operation", palette::DIM)),
+        );
+        return;
+    }
+    let span = r
+        .transaction
+        .iter()
+        .map(|n| n.offset_ms + n.duration_ms)
+        .fold(1.0, f64::max);
+    let bar_w = 24usize;
+    let label_w = (inner.width as usize).saturating_sub(bar_w + 14).max(10);
+    let last = last_flags(&r.transaction);
+    for (i, n) in r.transaction.iter().enumerate().take(inner.height as usize) {
+        let prefix = if n.depth == 0 {
+            String::new()
+        } else {
+            format!(
+                "{}{}",
+                "  ".repeat(n.depth - 1),
+                if last[i] { "└ " } else { "├ " }
+            )
+        };
+        let label = truncate_width(&format!("{prefix}{}", n.label), label_w);
+        let start = ((n.offset_ms / span) * bar_w as f64).floor() as usize;
+        let len = ((n.duration_ms / span) * bar_w as f64).round() as usize;
+        let start = start.min(bar_w.saturating_sub(1));
+        let bar = if len == 0 {
+            "▏".to_string()
+        } else {
+            "█".repeat(len.min(bar_w - start))
+        };
+        let failed = n.success == Some(false);
+        let line = Line::from(vec![
+            ctx.s(
+                format!(" {label:<label_w$} "),
+                if n.depth == 0 {
+                    palette::TEXT
+                } else {
+                    palette::SOFT
+                },
+            ),
+            ctx.s(" ".repeat(start), palette::DIM),
+            ctx.s(
+                format!("{bar:<width$}", width = bar_w - start),
+                if failed { palette::RED } else { palette::GREEN },
+            ),
+            ctx.s(format!(" {:>7} ", fmt_ms(n.duration_ms)), palette::TEXT),
+            match n.success {
+                Some(false) => ctx.s("✕", palette::RED),
+                Some(true) => ctx.s("✓", palette::GREEN),
+                None => ctx.s("·", palette::DIM),
+            },
+        ]);
+        put_line(buf, inner, i as u16, &line);
     }
 }

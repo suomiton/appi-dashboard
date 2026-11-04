@@ -617,6 +617,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn request_screen_snapshot() {
+        let (app, mono) = drill_app(View::Overview, '2', &[0, 0]);
+        let t = render(&app, mono, 120, 34);
+        let out = text(&t);
+        assert!(out.contains("› request"));
+        assert!(out.contains("SqlException"));
+        assert!(out.contains("end-to-end transaction"));
+        insta::assert_snapshot!("request_screen_120x34", t.backend());
+    }
+
+    #[test]
     fn drill_loading_and_failed_states() {
         let (mut app, mono) = drill_app(View::Overview, '2', &[]);
         app.drill[0].data = crate::app::FrameData::Loading;
