@@ -1,0 +1,266 @@
+<style>
+.option .content{min-width:0}
+.term{background:#0f111a;color:#c0caf5;font-family:"JetBrainsMono Nerd Font","JetBrains Mono","Cascadia Mono","DejaVu Sans Mono",ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.22;padding:10px 12px;border-radius:8px;margin-top:.75rem;box-shadow:0 6px 24px rgba(0,0,0,.35);overflow:hidden}
+.term *{box-sizing:border-box}
+.term .hdr{display:flex;gap:10px;align-items:center;padding:2px 2px 4px;white-space:nowrap;overflow:hidden}
+.term .sp{flex:1}
+.term .dim{color:#565f89}.term .ok{color:#9ece6a}.term .warn{color:#e0af68}.term .bad{color:#f7768e}
+.term .cy{color:#7dcfff}.term .pu{color:#bb9af7}.term .bl{color:#7aa2f7}.term .or{color:#ff9e64}.term .tx{color:#a9b1d6}
+.term .badge{background:#f7768e;color:#0f111a;padding:0 5px;border-radius:3px;font-weight:700}
+.term .row{display:flex;gap:8px;margin-top:13px}
+.term .pnl{position:relative;flex:1;min-width:0;border:1px solid #2f3654;border-radius:7px;padding:10px 8px 6px}
+.term .pnl.alert{border-color:#f7768e;box-shadow:0 0 0 1px rgba(247,118,142,.25),inset 0 0 22px rgba(247,118,142,.10)}
+.term .pnl.focus{border-color:#7aa2f7;box-shadow:0 0 0 1px #7aa2f7}
+.term .pt,.term .pr{position:absolute;top:-.72em;background:#0f111a;padding:0 4px;white-space:nowrap}
+.term .pt{left:8px}.term .pr{right:8px}
+.term .hk{color:#ff9e64}
+.term .ch{overflow:hidden;white-space:pre;line-height:1.05}
+.term .lg{margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#a9b1d6}
+.term .lg b{color:#c0caf5;font-weight:600}
+.term .big{line-height:1;white-space:pre;margin:3px 0 2px}
+.term .ft{margin-top:10px;color:#565f89;white-space:nowrap;overflow:hidden}
+.term .ft b{color:#ff9e64;font-weight:400}
+.term .pre{white-space:pre;overflow:hidden}
+.term .sel{background:#283457;display:inline-block;width:100%}
+.term .mr{display:flex;gap:8px;white-space:nowrap;margin:1px 0}
+.term .ml{width:13ch;color:#a9b1d6;flex-shrink:0}
+.term .mv{margin-left:auto}
+.term .crumb{color:#7aa2f7;padding:0 2px 2px}
+.term .crumb .dim{margin:0 4px}
+.dd{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem}
+@media (max-width:1200px){.dd{grid-template-columns:1fr}}
+.step .label{margin-bottom:0}
+.note{font-size:.8rem;color:var(--text-secondary);margin-top:.5rem}
+.term .tab{padding:0 8px;border-radius:4px;color:#565f89;cursor:pointer;user-select:none}
+.term .tab.on{background:#7aa2f7;color:#0f111a;font-weight:700}
+.term .tab.hot{color:#f7768e;animation:pulse 1.6s ease-in-out infinite}
+.term .tab.hot.on{background:#f7768e;color:#0f111a;animation:none}
+.term .tab .cnt{font-weight:700}
+@keyframes pulse{50%{opacity:.45}}
+</style>
+
+<h2>Two tabs: Overview and Failures</h2>
+<p class="subtitle"><b>Try it:</b> press <b>Tab</b> anywhere on this page, or click a tab name in the terminal header. The Failures tab label stays red while failures are spiking, so you can spot it from the Overview. Same fake data as before.</p>
+
+<div class="term" id="tui" style="font-size:12px">
+    <div class="hdr"><span class="bl">◆ my-app-prod</span><span class="badge">PROD</span><span class="dim">│</span><span class="tab on" data-v="ovw">overview</span><span class="tab hot" data-v="fail">failures <span class="cnt">● 12</span></span><span class="dim">│</span><span class="tx">range</span><b>4h</b><span class="dim">│</span><span class="tx">refresh</span><b>30s</b><span class="dim">next 12s ⟳</span><span class="dim">│</span><span class="ok">● 2 servers</span><span class="sp"></span><span class="cy">15:06:42</span><span class="dim">Wed 4 Nov · FLE</span></div>
+   <div id="v-ovw">
+    <div class="row">
+     <div class="pnl"><div class="pt tx">users</div><div class="big cy" data-big="165"></div><div class="lg dim">active · 5m</div></div>
+     <div class="pnl"><div class="pt tx">sessions</div><div class="big cy" data-big="360"></div><div class="lg dim">unique · 4h</div></div>
+     <div class="pnl"><div class="pt tx">requests</div><div class="big bl" data-big="412"></div><div class="lg dim">per min</div></div>
+     <div class="pnl alert"><div class="pt bad">failed</div><div class="big bad" data-big="12"></div><div class="lg bad">▲ last 5m</div></div>
+     <div class="pnl"><div class="pt tx">exceptions</div><div class="big pu" data-big="30"></div><div class="lg dim">server · 4h</div></div>
+     <div class="pnl"><div class="pt tx">response</div><div class="big warn" data-big="119"></div><div class="lg dim">ms avg</div></div>
+     <div class="pnl"><div class="pt tx">availability</div><div class="big ok" data-big="100"></div><div class="lg dim">% · 4h</div></div>
+    </div>
+    <div class="row">
+     <div class="pnl"><div class="pt"><span class="hk">¹</span>sessions & users</div><div class="pr dim">4h</div>
+      <div class="ch" data-s="noisy" data-h="3" data-g="c" data-seed="2"></div><div class="ch" data-s="noisy" data-h="2" data-g="p" data-inv="1" data-seed="3"></div>
+      <div class="lg"><span class="cy">▲</span> sessions <b>360</b>  <span class="pu">▼</span> users <b>343</b></div></div>
+     <div class="pnl alert"><div class="pt bad"><span class="hk">²</span>failed requests</div><div class="pr bad">▲ 12 in 5m</div>
+      <div class="ch" data-s="fail" data-h="5" data-g="r" data-seed="7"></div>
+      <div class="lg"><span class="bad">■</span> failed <b>24</b> <span class="dim">· 4h</span></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">³</span>server response</div><div class="pr dim">avg</div>
+      <div class="ch" data-s="spike" data-h="5" data-g="t" data-seed="5"></div>
+      <div class="lg"><span class="cy">■</span> avg <b>119ms</b>  <span class="dim">p95</span> <b>480ms</b></div></div>
+    </div>
+    <div class="row">
+     <div class="pnl"><div class="pt"><span class="hk">⁴</span>page load</div><div class="pr dim">browser</div>
+      <div class="ch" data-s="noisy" data-h="5" data-g="y" data-seed="9"></div>
+      <div class="lg"><span class="ok">■</span> client <b>336ms</b>  network <b>149ms</b>  send <b>80ms</b></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁵</span>exceptions / dependencies</div><div class="pr dim">count</div>
+      <div class="ch" data-s="low" data-h="3" data-g="p" data-seed="11"></div><div class="ch" data-s="low" data-h="2" data-g="r" data-inv="1" data-seed="13"></div>
+      <div class="lg"><span class="pu">▲</span> exceptions <b>30</b>  <span class="or">▼</span> dep. failures <b>45</b></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁶</span>cpu</div><div class="pr dim">process</div>
+      <div class="ch" data-s="low" data-h="5" data-g="g" data-seed="17"></div>
+      <div class="lg"><span class="ok">■</span> process <b>0.31%</b>  processor <b>--</b></div></div>
+    </div>
+    <div class="row">
+     <div class="pnl"><div class="pt"><span class="hk">⁷</span>service bus</div><div class="pr warn">⚠ dlq 460</div>
+      <div class="ch" data-s="flat" data-h="3" data-g="c" data-seed="19"></div>
+      <div class="lg"><span class="bl">■</span> active <b>8.33M</b>  <span class="warn">dead-letter <b>460</b></span></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁸</span>redis keys</div><div class="pr dim">my-redis-prod</div>
+      <div class="ch" data-s="flat" data-h="3" data-g="t" data-seed="23"></div>
+      <div class="lg"><span class="cy">■</span> total keys <b>127.06M</b></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁹</span>memory</div><div class="pr dim">available</div>
+      <div class="ch" data-s="mem" data-h="3" data-g="y" data-seed="29"></div>
+      <div class="lg"><span class="ok">■</span> available <b>11.72 GB</b>  io <b>12.9 MB/s</b></div></div>
+    </div>
+   </div>
+   <div id="v-fail" style="display:none">
+    <div class="row">
+     <div class="pnl alert" style="flex:2.3"><div class="pt bad"><span class="hk">¹</span>failures</div><div class="pr bad">▲ 12 failed requests in last 5m</div>
+      <div style="display:flex;gap:14px">
+       <div style="flex:1;min-width:0">
+        <div class="ch" data-s="fail" data-h="6" data-g="r" data-seed="7"></div>
+        <div class="ch" data-s="low" data-h="3" data-g="p" data-inv="1" data-seed="11"></div>
+        <div class="lg"><span class="bad">▲</span> failed requests <b>24</b>  <span class="pu">▼</span> server exceptions <b>30</b>  <span class="or">■</span> dep. failures <b>45</b> <span class="dim">· 4h</span></div>
+       </div>
+       <div class="pre" style="width:36ch;flex-shrink:0;border-left:1px solid #2f3654;padding-left:12px"><span class="dim">top failing endpoints · 15m</span>
+<span class="sel"><span class="bad">12</span> POST /api/import/upload</span>
+<span class="warn"> 2</span> GET  /api/reports/export
+<span class="warn"> 1</span> POST /api/auth/token
+
+<span class="dim">top exceptions · 15m</span>
+<span class="pu"> 9</span> SqlException  timeout
+<span class="pu"> 3</span> HttpRequestException 502
+
+<span class="dim">↵ drill in</span></div>
+      </div></div>
+     <div class="pnl" style="flex:1"><div class="pt"><span class="hk">²</span>health</div>
+      <div class="mr"><span class="ml">availability</span><span data-m="1" data-g="ok"></span><span class="mv ok">100%</span></div>
+      <div class="mr"><span class="ml">response avg</span><span data-m=".24" data-g="g"></span><span class="mv">119ms</span></div>
+      <div class="mr"><span class="ml">response p95</span><span data-m=".48" data-g="g"></span><span class="mv warn">480ms</span></div>
+      <div class="mr"><span class="ml">cpu</span><span data-m=".05" data-g="g"></span><span class="mv">0.3%</span></div>
+      <div class="mr"><span class="ml">memory free</span><span data-m=".72" data-g="ok"></span><span class="mv">11.7G</span></div>
+      <div class="mr"><span class="ml">dead-letter</span><span data-m=".82" data-g="r"></span><span class="mv warn">460 ⚠</span></div>
+      <div class="mr"><span class="ml">avail. tests</span><span data-m="1" data-g="ok"></span><span class="mv ok">240/240</span></div>
+      <div class="mr" style="margin-top:6px"><span class="ml">sessions</span><span class="cy">360</span><span class="mv tx">users <b>343</b></span></div>
+      <div class="mr"><span class="ml">requests</span><span class="bl">412/min</span><span class="mv tx">servers <b class="ok">2</b></span></div>
+     </div>
+    </div>
+    <div class="row">
+     <div class="pnl"><div class="pt"><span class="hk">³</span>traffic</div>
+      <div class="ch" data-s="noisy" data-h="3" data-g="c" data-seed="2"></div><div class="ch" data-s="noisy" data-h="2" data-g="p" data-inv="1" data-seed="3"></div>
+      <div class="lg"><span class="cy">▲</span> sessions <b>360</b> <span class="pu">▼</span> users <b>343</b></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁴</span>server response</div>
+      <div class="ch" data-s="spike" data-h="5" data-g="t" data-seed="5"></div>
+      <div class="lg"><span class="cy">■</span> avg <b>119ms</b></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁵</span>page load</div>
+      <div class="ch" data-s="noisy" data-h="5" data-g="y" data-seed="9"></div>
+      <div class="lg"><span class="ok">■</span> client <b>336ms</b> net <b>149ms</b></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁶</span>browser exceptions</div>
+      <div class="ch" data-s="spike" data-h="5" data-g="p" data-seed="31"></div>
+      <div class="lg"><span class="pu">■</span> count <b>60</b></div></div>
+    </div>
+    <div class="row">
+     <div class="pnl"><div class="pt"><span class="hk">⁷</span>cpu</div><div class="ch" data-s="low" data-h="2" data-g="g" data-seed="17"></div><div class="lg">process <b>0.31%</b></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁸</span>memory</div><div class="ch" data-s="mem" data-h="2" data-g="y" data-seed="29"></div><div class="lg">avail <b>11.72GB</b></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">⁹</span>service bus</div><div class="ch" data-s="flat" data-h="2" data-g="c" data-seed="19"></div><div class="lg">active <b>8.33M</b> <span class="warn">dlq <b>460</b></span></div></div>
+     <div class="pnl"><div class="pt"><span class="hk">0</span>redis</div><div class="ch" data-s="flat" data-h="2" data-g="t" data-seed="23"></div><div class="lg">keys <b>127.06M</b></div></div>
+    </div>
+   </div>
+    <div class="ft"><b>tab</b> switch view  <b>0-9</b> select panel  <b>↵</b> drill in  <b>esc</b> back  <b>r</b> refresh  <b>+/-</b> interval  <b>t</b> time range  <b>q</b> quit</div>
+</div>
+
+<!-- ===================== DRILL-DOWN ===================== -->
+<h2 style="margin-top:2.75rem">Drill-down: failures → endpoints → exceptions → one request</h2>
+<p class="subtitle">Press <b>↵</b> to go one level deeper and <b>Esc</b> to go back. The path at the top shows where you are. Does this match how you'd investigate?</p>
+
+<div class="dd">
+ <div class="step">
+  <div class="label">1 · Overview: failed requests panel selected</div>
+  <div class="term">
+   <div class="crumb">overview</div>
+   <div class="row">
+    <div class="pnl"><div class="pt"><span class="hk">¹</span>sessions</div><div class="ch" data-s="noisy" data-h="4" data-g="c" data-seed="2"></div><div class="lg">sessions <b>360</b></div></div>
+    <div class="pnl alert focus"><div class="pt bad"><span class="hk">²</span>failed requests</div><div class="pr bad">▲ 12 in 5m</div><div class="ch" data-s="fail" data-h="4" data-g="r" data-seed="7"></div><div class="lg">failed <b>24</b> <span class="dim">· 4h</span></div></div>
+    <div class="pnl"><div class="pt"><span class="hk">³</span>response</div><div class="ch" data-s="spike" data-h="4" data-g="t" data-seed="5"></div><div class="lg">avg <b>119ms</b></div></div>
+   </div>
+   <div class="ft"><b>↵</b> drill into failed requests</div>
+  </div>
+ </div>
+
+ <div class="step">
+  <div class="label">2 · Failing endpoints</div>
+  <div class="term">
+   <div class="crumb">overview<span class="dim">›</span>failed requests</div>
+   <div class="row"><div class="pnl"><div class="pt">failing endpoints</div><div class="pr dim">last 4h · 24 failed</div>
+<div class="pre"><span class="dim">  endpoint                         fails  result codes      trend</span>
+<span class="sel"><span class="bl">▶</span> POST /api/import/upload            <span class="bad">12</span>   <span class="bad">500</span>×9 <span class="bad">502</span>×3      <span class="bad">▁▁▁▁▂▁▃▇█</span></span>
+  GET  /api/reports/export            <span class="warn"> 7</span>   <span class="warn">504</span>×7            <span class="warn">▁▃▁▂▁▁▁▂▁</span>
+  POST /api/auth/token                <span class="warn"> 3</span>   <span class="warn">401</span>×3            <span class="warn">▁▁▁▁▁▁▁▁▃</span>
+  GET  /api/sites/{id}/readings       <span class="warn"> 2</span>   <span class="bad">500</span>×2            <span class="warn">▂▁▁▁▁▁▁▁▁</span></div>
+   </div></div>
+   <div class="ft"><b>↑↓</b> select  <b>↵</b> open  <b>s</b> sort  <b>esc</b> back</div>
+  </div>
+ </div>
+
+ <div class="step">
+  <div class="label">3 · One endpoint: its exception types, failing dependencies and recent failures</div>
+  <div class="term">
+   <div class="crumb">overview<span class="dim">›</span>failed requests<span class="dim">›</span>POST /api/import/upload</div>
+   <div class="row">
+    <div class="pnl"><div class="pt">exception types</div>
+<div class="pre"><span class="pu">SqlException</span> <span class="dim">timeout</span>     <span class="pu">██████████████</span> 9
+<span class="pu">HttpRequestException</span> <span class="dim">502</span> <span class="pu">█████</span>          3</div></div>
+    <div class="pnl"><div class="pt">failing dependencies</div>
+<div class="pre"><span class="dim">SQL </span> appdb INSERT      <span class="or">██████████████</span> 9
+<span class="dim">HTTP</span> my-func-prod     <span class="or">█████</span>          3</div></div>
+   </div>
+   <div class="row"><div class="pnl"><div class="pt">recent failures</div>
+<div class="pre"><span class="dim">  time      code  duration  instance        exception</span>
+<span class="sel"><span class="bl">▶</span> 14:58:12  <span class="bad">500</span>   30.02s    my-app-prod-1   SqlException</span>
+  14:57:40  <span class="bad">500</span>   30.01s    my-app-prod-0   SqlException
+  14:51:03  <span class="bad">502</span>    2.10s    my-app-prod-1   HttpRequestException</div></div></div>
+   <div class="ft"><b>←→</b> switch panel  <b>↵</b> open request  <b>esc</b> back</div>
+  </div>
+ </div>
+
+ <div class="step">
+  <div class="label">4 · One request: details, stack trace and full transaction</div>
+  <div class="term">
+   <div class="crumb">overview<span class="dim">›</span>failed requests<span class="dim">›</span>POST /api/import/upload<span class="dim">›</span>14:58:12</div>
+   <div class="row"><div class="pnl"><div class="pt">request</div>
+<div class="pre"><span class="dim">result</span> <span class="bad">500</span>   <span class="dim">duration</span> 30.02s   <span class="dim">instance</span> my-app-prod-1
+<span class="dim">operation_Id</span> 7f3a9c2e…   <span class="dim">session</span> 1b8e…   <span class="dim">user</span> 4c1d…
+
+<span class="pu">Microsoft.Data.SqlClient.SqlException</span>
+  Execution Timeout Expired. The timeout period elapsed prior
+  to completion of the operation or the server is not responding.
+<span class="dim">  at</span> ImportService.SaveBatchAsync  <span class="dim">ImportService.cs:142</span>
+<span class="dim">  at</span> ImportController.Upload       <span class="dim">ImportController.cs:58</span></div></div></div>
+   <div class="row"><div class="pnl"><div class="pt">end-to-end transaction</div>
+<div class="pre">POST /api/import/upload  <span class="bad">████████████████████████</span> 30.02s <span class="bad">✕</span>
+ ├ <span class="dim">SQL </span> appdb INSERT …   <span class="or">███████████████████████▌</span> 29.95s <span class="bad">✕</span>
+ └ <span class="dim">Blob</span> PUT uploads/…   <span class="ok">▏</span>                        0.06s <span class="ok">✓</span></div></div></div>
+   <div class="ft"><b>c</b> copy operation_Id  <b>o</b> open in Azure portal  <b>esc</b> back</div>
+  </div>
+ </div>
+</div>
+<p class="note">Fake data throughout. In the real app every number and chart comes from your App Insights and Azure Monitor data.</p>
+
+<script>
+(function(){
+ const G={g:['#9ece6a','#e0af68','#f7768e'],c:['#2ac3de','#7aa2f7','#bb9af7'],r:['#e0af68','#ff9e64','#f7768e'],
+          p:['#7aa2f7','#bb9af7','#ff007c'],t:['#73daca','#7dcfff','#7aa2f7'],y:['#9ece6a','#73daca','#e0af68'],ok:['#9ece6a','#9ece6a']};
+ const hex=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+ function lerp(st,t){const n=st.length-1,x=Math.min(n-1e-9,Math.max(0,t*n)),i=Math.floor(x),f=x-i,a=hex(st[i]),b=hex(st[i+1]);
+   return 'rgb('+a.map((v,k)=>Math.round(v+(b[k]-v)*f)).join(',')+')';}
+ function rng(s){return function(){s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+ function series(shape,n,seed){const r=rng(seed),o=[];let v=.45+r()*.2;
+  for(let i=0;i<n;i++){const x=i/n;let y=0;
+   if(shape==='noisy'){v+=(r()-.5)*.2;v=Math.min(.95,Math.max(.2,v));y=v;}
+   else if(shape==='spike'){y=.1+r()*.14+(r()<.05?.4+r()*.5:0);}
+   else if(shape==='flat'){y=.8+(r()-.5)*.04;}
+   else if(shape==='fail'){y=x>.9?.35+r()*.6:(Math.abs(x-.12)<.012?.3:0);}
+   else if(shape==='low'){y=.05+r()*.08+(r()<.05?.3+r()*.55:0);}
+   else if(shape==='mem'){v+=(r()-.5)*.07;v=Math.min(.78,Math.max(.6,v));y=v;}
+   o.push(Math.max(0,Math.min(1,y)));}
+  return o;}
+ const LB=[1,2,4,64],RB=[8,16,32,128];
+ function cw(el){const s=document.createElement('span');s.style.cssText='position:absolute;visibility:hidden;white-space:pre';s.textContent='⣿'.repeat(60);el.appendChild(s);const w=s.getBoundingClientRect().width/60;s.remove();return w||7;}
+ function chart(el){el.innerHTML='';const h=+el.dataset.h||4,inv=el.dataset.inv==='1',st=G[el.dataset.g||'g'];
+  const w=Math.max(8,Math.floor(el.clientWidth/cw(el))),vals=series(el.dataset.s||'noisy',w*2,+el.dataset.seed||1),D=h*4;let html='';
+  for(let r=0;r<h;r++){let line='';
+   for(let c=0;c<w;c++){const nl=Math.round(vals[2*c]*D),nr=Math.round(vals[2*c+1]*D);let b=0;
+    for(let d=0;d<4;d++){const k=inv?r*4+d:(h-1-r)*4+(3-d);if(k<nl)b|=LB[d];if(k<nr)b|=RB[d];}
+    line+=String.fromCharCode(0x2800+b);}
+   const t=h<2?0.5:(inv?r/(h-1):(h-1-r)/(h-1));html+='<div style="color:'+lerp(st,t)+'">'+line+'</div>';}
+  el.innerHTML=html;}
+ const F={'0':['█▀█','█ █','▀▀▀'],'1':['▀█ ',' █ ','▀▀▀'],'2':['▀▀█','█▀▀','▀▀▀'],'3':['▀▀█',' ▀█','▀▀▀'],'4':['█ █','▀▀█','  ▀'],
+          '5':['█▀▀','▀▀█','▀▀▀'],'6':['█▀▀','█▀█','▀▀▀'],'7':['▀▀█','  █','  ▀'],'8':['█▀█','█▀█','▀▀▀'],'9':['█▀█','▀▀█','▀▀▀'],'.':[' ',' ','▀']};
+ document.querySelectorAll('[data-big]').forEach(el=>{const rows=['','',''];for(const ch of el.dataset.big){const g=F[ch]||F['.'];for(let i=0;i<3;i++)rows[i]+=g[i]+' ';}
+  el.innerHTML=rows.map(r=>'<div>'+r+'</div>').join('');});
+ document.querySelectorAll('[data-m]').forEach(el=>{const v=+el.dataset.m,n=+el.dataset.n||14,st=G[el.dataset.g||'g'];let h='';
+  for(let i=0;i<n;i++){const on=i<Math.round(v*n);h+='<span style="color:'+(on?lerp(st,i/(n-1)):'#252a40')+'">■</span>';}el.innerHTML=h;});
+ const all=()=>document.querySelectorAll('.ch').forEach(chart);
+ all();let t;window.addEventListener('resize',()=>{clearTimeout(t);t=setTimeout(all,120);});
+ function sw(v){document.querySelectorAll('#tui .tab').forEach(x=>x.classList.toggle('on',x.dataset.v===v));
+  document.getElementById('v-ovw').style.display=v==='ovw'?'':'none';
+  document.getElementById('v-fail').style.display=v==='fail'?'':'none';all();}
+ document.querySelectorAll('#tui .tab').forEach(x=>x.addEventListener('click',e=>{e.stopPropagation();sw(x.dataset.v);}));
+ document.addEventListener('keydown',e=>{if(e.key==='Tab'){e.preventDefault();sw(document.querySelector('#tui .tab.on').dataset.v==='ovw'?'fail':'ovw');}});
+})();
+</script>

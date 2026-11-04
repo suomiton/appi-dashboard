@@ -1,0 +1,6 @@
+/target
+.superpowers/
+.playwright-mcp/
+.scrub-list
+.dev-dashboard-id
+*.local.toml
