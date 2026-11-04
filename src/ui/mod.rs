@@ -536,6 +536,16 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn failures_top_lists_visible_on_narrow_terminals() {
+        let (app, mono) = demo_app(View::Failures);
+        for (w, h) in [(80, 24), (100, 30), (119, 40)] {
+            let out = text(&render(&app, mono, w, h));
+            assert!(out.contains("top failing endpoints"), "{w}x{h}:\n{out}");
+            assert!(out.contains("POST /api/orders"), "{w}x{h}");
+        }
+    }
+
+    #[test]
     fn long_names_do_not_panic() {
         let (mut app, mono) = demo_app(View::Failures);
         if let Some(t) = app.store.tops.as_mut() {

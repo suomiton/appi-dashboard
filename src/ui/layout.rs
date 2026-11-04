@@ -89,28 +89,34 @@ pub fn failures_layout(area: Rect) -> FailuresLayout {
         .min(body.height);
     let [top, rest] =
         Layout::vertical([Constraint::Length(top_h), Constraint::Fill(1)]).areas(body);
-    let main_pct = if area.width >= 120 { 70 } else { 64 };
-    let [main, health] = Layout::horizontal([
-        Constraint::Percentage(main_pct),
-        Constraint::Percentage(100 - main_pct),
-    ])
-    .areas(top);
-    let cols = if area.width >= 100 { 4 } else { 2 };
-    let panels = if cols == 4 {
+    if area.width >= 120 {
+        let [main, health] =
+            Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)]).areas(top);
         let [a, b] =
             Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(rest);
-        let mut v = grid(a, 4, 4);
-        v.extend(grid(b, 4, 4));
-        v
+        let mut panels = grid(a, 4, 4);
+        panels.extend(grid(b, 4, 4));
+        FailuresLayout {
+            header,
+            main,
+            health,
+            panels,
+            footer,
+        }
     } else {
-        grid(rest, 8, 2)
-    };
-    FailuresLayout {
-        header,
-        main,
-        health,
-        panels,
-        footer,
+        // Narrow: the failures panel keeps the full width so its top lists
+        // stay visible; health and the small panels share the rest.
+        let health_w = 36.min(rest.width / 2);
+        let [health, grid_area] =
+            Layout::horizontal([Constraint::Length(health_w), Constraint::Fill(1)]).areas(rest);
+        let cols = if grid_area.width >= 80 { 4 } else { 2 };
+        FailuresLayout {
+            header,
+            main: top,
+            health,
+            panels: grid(grid_area, 8, cols),
+            footer,
+        }
     }
 }
 
