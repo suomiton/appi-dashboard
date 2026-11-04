@@ -111,6 +111,8 @@ struct Setup {
     config_path: Option<PathBuf>,
     demo: bool,
     warning: Option<String>,
+    /// Commands to run before the first event (e.g. discovery for --app).
+    initial: Vec<Command>,
 }
 
 fn setup(cli: &Cli) -> Setup {
@@ -132,22 +134,29 @@ fn setup(cli: &Cli) -> Setup {
             Endpoints::default(),
         )))
     };
-    let instance = if cli.demo {
-        demo_instances().into_iter().next()
-    } else {
-        config.last_instance.as_ref().map(|s| s.to_instance())
+    let instance = match (&cli.app, cli.demo) {
+        (Some(_), _) => None,
+        (None, true) => demo_instances().into_iter().next(),
+        (None, false) => config.last_instance.as_ref().map(|s| s.to_instance()),
     };
     let depth = resolve_depth(
         cli.color.unwrap_or(config.color),
         detect_depth(|k| std::env::var(k).ok()),
     );
+    let mut app = App::new(config, instance, range, refresh);
+    let initial = match &cli.app {
+        Some(arg) => app.open_picker(false, Some(arg.clone())),
+        None if app.instance.is_none() => app.open_picker(false, None),
+        None => Vec::new(),
+    };
     Setup {
-        app: App::new(config, instance, range, refresh),
+        app,
         theme: Theme::new(depth),
         backend,
         config_path,
         demo: cli.demo,
         warning,
+        initial,
     }
 }
 
@@ -169,6 +178,7 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, s: Setup) -> Result
         backend,
         config_path,
         demo,
+        initial,
         ..
     } = s;
     let (req_tx, req_rx) = mpsc::unbounded_channel();
@@ -179,7 +189,34 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, s: Setup) -> Result
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut effects = Effects::new();
     let mut dirty = true;
+    let mut pending = initial;
     loop {
+        for cmd in pending.drain(..) {
+            match cmd {
+                Command::Fetch(r) => {
+                    let _ = req_tx.send(r);
+                }
+                Command::SaveConfig(cfg) => {
+                    if !demo
+                        && let Some(p) = &config_path
+                        && let Err(e) = config::save(p, &cfg)
+                    {
+                        app.toast(format!("could not save config: {e}"), Instant::now());
+                    }
+                }
+                Command::Copy(text) => match effects.copy(&text) {
+                    Ok(()) => app.toast("copied", Instant::now()),
+                    Err(e) => app.toast(e, Instant::now()),
+                },
+                Command::OpenUrl(url) => {
+                    if let Err(e) = effects.open(&url) {
+                        app.toast(e, Instant::now());
+                    }
+                }
+                Command::Quit => return Ok(()),
+            }
+            dirty = true;
+        }
         if dirty {
             terminal
                 .draw(|f| {
@@ -211,32 +248,7 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, s: Setup) -> Result
                 app.on_tick(Instant::now())
             }
         };
-        for cmd in cmds {
-            match cmd {
-                Command::Fetch(r) => {
-                    let _ = req_tx.send(r);
-                }
-                Command::SaveConfig(cfg) => {
-                    if !demo
-                        && let Some(p) = &config_path
-                        && let Err(e) = config::save(p, &cfg)
-                    {
-                        app.toast(format!("could not save config: {e}"), Instant::now());
-                    }
-                }
-                Command::Copy(text) => match effects.copy(&text) {
-                    Ok(()) => app.toast("copied", Instant::now()),
-                    Err(e) => app.toast(e, Instant::now()),
-                },
-                Command::OpenUrl(url) => {
-                    if let Err(e) = effects.open(&url) {
-                        app.toast(e, Instant::now());
-                    }
-                }
-                Command::Quit => return Ok(()),
-            }
-            dirty = true;
-        }
+        pending = cmds;
     }
 }
 
@@ -315,6 +327,46 @@ mod tests {
             KeyEventState::NONE,
         );
         assert!(accept_key(&repeat));
+    }
+
+    fn cli(args: &[&str]) -> Cli {
+        use clap::Parser;
+        let dir = std::env::temp_dir().join(format!("appi-test-{}", std::process::id()));
+        let cfg = dir.join("config.toml");
+        let mut all = vec!["appi-dashboard", "--config", cfg.to_str().unwrap()];
+        all.extend_from_slice(args);
+        Cli::try_parse_from(all).unwrap()
+    }
+
+    fn discovers(cmds: &[Command]) -> bool {
+        cmds.iter()
+            .any(|c| matches!(c, Command::Fetch(DataRequest::Discover)))
+    }
+
+    #[test]
+    fn app_flag_opens_picker_pending_resolution() {
+        let s = setup(&cli(&["--demo", "--app", "demo-app-staging"]));
+        assert!(s.app.instance.is_none());
+        let p = s.app.picker.as_ref().unwrap();
+        assert_eq!(p.pending_app.as_deref(), Some("demo-app-staging"));
+        assert!(!p.can_cancel);
+        assert!(discovers(&s.initial));
+    }
+
+    #[test]
+    fn demo_without_app_starts_on_first_demo_instance() {
+        let s = setup(&cli(&["--demo"]));
+        assert_eq!(s.app.instance.as_ref().unwrap().name, "demo-app-prod");
+        assert!(s.app.picker.is_none());
+        assert!(s.initial.is_empty());
+    }
+
+    #[test]
+    fn no_remembered_instance_opens_picker() {
+        let s = setup(&cli(&[]));
+        assert!(s.app.instance.is_none());
+        assert!(s.app.picker.is_some());
+        assert!(discovers(&s.initial));
     }
 
     #[test]

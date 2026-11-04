@@ -4,6 +4,7 @@ pub mod common;
 pub mod failures;
 pub mod layout;
 pub mod overview;
+pub mod picker;
 pub mod theme;
 pub mod widgets;
 
@@ -66,6 +67,19 @@ pub fn render(
         auth_screen(buf, area, &ctx, problem);
         return;
     }
+    if app.instance.is_none() {
+        header(
+            buf,
+            Rect::new(area.x, area.y, area.width, 1),
+            &ctx,
+            now,
+            mono,
+        );
+        if let Some(p) = &app.picker {
+            picker::render(buf, area, &ctx, p);
+        }
+        return;
+    }
     match app.view {
         View::Overview => {
             let l = overview_layout(area);
@@ -80,7 +94,9 @@ pub fn render(
             footer(buf, l.footer, &ctx, mono);
         }
     }
-    if app.help {
+    if let Some(p) = &app.picker {
+        picker::render(buf, area, &ctx, p);
+    } else if app.help {
         help(buf, area, &ctx);
     }
 }
@@ -490,6 +506,35 @@ pub(crate) mod tests {
         render(&app, mono, 80, 24);
         let out = text(&render(&app, mono, 160, 45));
         assert!(out.contains('…'), "long names are cut with an ellipsis");
+    }
+
+    #[test]
+    fn picker_snapshot() {
+        let (mut app, mono) = demo_app(View::Overview);
+        app.open_picker(true, None);
+        app.on_data(DataEvent::Instances(Ok(demo_instances())), mono, wall());
+        app.on_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Down,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            mono,
+        );
+        insta::assert_snapshot!("picker_100x30", render(&app, mono, 100, 30).backend());
+        app.picker.as_mut().unwrap().all = None;
+        assert!(text(&render(&app, mono, 100, 30)).contains("discovering instances…"));
+        app.picker.as_mut().unwrap().all = Some(Err("HTTP 403: denied".into()));
+        assert!(text(&render(&app, mono, 100, 30)).contains("HTTP 403: denied"));
+    }
+
+    #[test]
+    fn picker_without_instance_hides_dashboard() {
+        let mut app = App::new(Config::default(), None, TimeRange::H4, 30);
+        app.open_picker(false, None);
+        let out = text(&render(&app, Instant::now(), 100, 30));
+        assert!(out.contains("select application insights"));
+        assert!(out.contains("esc quit"));
+        assert!(!out.contains("sessions & users"));
     }
 
     #[test]
