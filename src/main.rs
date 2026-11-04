@@ -42,7 +42,12 @@ async fn main() {
                 }
             }
         }
-        None => println!("appi-dashboard {}", env!("CARGO_PKG_VERSION")),
+        None => {
+            if let Err(e) = appi_dashboard::run::run(cli).await {
+                eprintln!("appi-dashboard: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
