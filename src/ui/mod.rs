@@ -695,6 +695,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn long_transactions_scroll_to_the_selection() {
+        let (mut app, mono) = drill_app(View::Overview, '2', &[0, 0]);
+        let f = app.drill.last_mut().unwrap();
+        f.data = crate::app::FrameData::Ready(crate::data::drill::ScreenData::Request(
+            crate::app::tests::long_transaction(60, 50),
+        ));
+        f.selected[0] = 50;
+        let out = text(&render(&app, mono, 120, 34));
+        assert!(out.contains("call 50"), "{out}");
+        assert!(out.contains("51 of 60"), "{out}");
+    }
+
+    #[test]
     fn drill_loading_and_failed_states() {
         let (mut app, mono) = drill_app(View::Overview, '2', &[]);
         app.drill[0].data = crate::app::FrameData::Loading;

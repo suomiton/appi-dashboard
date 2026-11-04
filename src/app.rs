@@ -128,6 +128,7 @@ impl DrillFrame {
                 1 => e.dependencies.len(),
                 _ => e.recent.len(),
             },
+            FrameData::Ready(ScreenData::Request(r)) => r.transaction.len(),
             _ => 0,
         }
     }
@@ -642,6 +643,14 @@ impl App {
             DataEvent::Instances(result) => self.on_instances(result, now),
             DataEvent::Drill { frame_id, result } => {
                 if let Some(f) = self.drill.iter_mut().find(|f| f.id == frame_id) {
+                    if let Ok(ScreenData::Request(r)) = &result {
+                        // Open on the first failed call: usually why we are here.
+                        f.selected[0] = r
+                            .transaction
+                            .iter()
+                            .position(|n| n.depth > 0 && n.success == Some(false))
+                            .unwrap_or(0);
+                    }
                     f.data = match result {
                         Ok(d) => FrameData::Ready(d),
                         Err(e) => FrameData::Failed(e.to_string()),
@@ -1528,6 +1537,44 @@ pub(crate) mod tests {
             })
             .collect();
         assert_eq!(views, [View::Failures], "refetches for the failures lists");
+    }
+
+    pub(crate) fn long_transaction(n: usize, failed_at: usize) -> crate::data::drill::RequestData {
+        crate::data::drill::RequestData {
+            request: None,
+            exception: None,
+            transaction: (0..n)
+                .map(|i| crate::data::drill::TxNode {
+                    depth: usize::from(i > 0),
+                    label: format!("call {i}"),
+                    offset_ms: i as f64,
+                    duration_ms: 1.0,
+                    success: Some(i != failed_at),
+                    code: "200".into(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn request_frame_scrolls_and_starts_on_first_failed_dependency() {
+        let mut a = drilled();
+        endpoint_frame(&mut a);
+        let now = Instant::now();
+        let id = drill_requests(&a.on_key(k(KeyCode::Enter), now))[0].0;
+        a.on_data(
+            DataEvent::Drill {
+                frame_id: id,
+                result: Ok(ScreenData::Request(long_transaction(40, 25))),
+            },
+            now,
+            wall(),
+        );
+        let f = a.drill.last().unwrap();
+        assert_eq!(f.rows(), 40);
+        assert_eq!(f.selected[0], 25);
+        a.on_key(k(KeyCode::Down), now);
+        assert_eq!(a.drill.last().unwrap().selected[0], 26);
     }
 
     #[test]

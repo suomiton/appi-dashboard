@@ -35,7 +35,7 @@ pub fn render(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
             ),
             FrameData::Ready(ScreenData::List(l)) => list_screen(buf, body, ctx, frame, l),
             FrameData::Ready(ScreenData::Endpoint(e)) => endpoint_screen(buf, body, ctx, frame, e),
-            FrameData::Ready(ScreenData::Request(r)) => request_screen(buf, body, ctx, r),
+            FrameData::Ready(ScreenData::Request(r)) => request_screen(buf, body, ctx, frame, r),
         }
     }
     footer_keys(buf, footer, ctx);
@@ -444,7 +444,7 @@ fn last_flags(nodes: &[TxNode]) -> Vec<bool> {
         .collect()
 }
 
-fn request_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, r: &RequestData) {
+fn request_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, frame: &DrillFrame, r: &RequestData) {
     let frames = r.exception.as_ref().map_or(0, |e| e.frames.len()) as u16;
     let wanted = 2 + 2 + if r.exception.is_some() { 5 + frames } else { 0 };
     let top_h = wanted.min(area.height * 60 / 100).max(5).min(area.height);
@@ -504,7 +504,24 @@ fn request_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, r: &RequestData) {
         put_line(buf, inner, i as u16, l);
     }
 
-    let inner = sub_panel(buf, bottom, ctx, "end-to-end transaction", false);
+    let total = r.transaction.len();
+    let visible = PanelBlock::inner(bottom).height as usize;
+    let selected = frame.selected[0].min(total.saturating_sub(1));
+    PanelBlock {
+        title: "end-to-end transaction",
+        hotkey: None,
+        right: (total > visible).then(|| {
+            Line::from(ctx.s(
+                format!("{} of {total} · ↑↓ scroll", selected + 1),
+                palette::DIM,
+            ))
+        }),
+        emphasis: Emphasis::Normal,
+        stale: None,
+        theme: ctx.theme,
+    }
+    .render(bottom, buf);
+    let inner = PanelBlock::inner(bottom).intersection(buf.area);
     if r.transaction.is_empty() {
         put_line(
             buf,
@@ -522,7 +539,9 @@ fn request_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, r: &RequestData) {
     let bar_w = 24usize;
     let label_w = (inner.width as usize).saturating_sub(bar_w + 14).max(10);
     let last = last_flags(&r.transaction);
-    for (i, n) in r.transaction.iter().enumerate().take(inner.height as usize) {
+    let first = selected.saturating_sub(visible.saturating_sub(1));
+    for (i, n) in r.transaction.iter().enumerate().skip(first).take(visible) {
+        let y = (i - first) as u16;
         let prefix = if n.depth == 0 {
             String::new()
         } else {
@@ -563,6 +582,9 @@ fn request_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, r: &RequestData) {
                 None => ctx.s("·", palette::DIM),
             },
         ]);
-        put_line(buf, inner, i as u16, &line);
+        put_line(buf, inner, y, &line);
+        if i == selected && total > 1 {
+            mark_selected(buf, inner, y, ctx);
+        }
     }
 }
