@@ -162,7 +162,10 @@ pub fn chart_body(
     let has = |id: SeriesId| ctx.app.store.has_data(id);
     let any = has(top.0) || bottom.is_some_and(|(b, _)| has(b));
     if !any {
-        put_centered(buf, chart, "no data in range", ctx.theme.fg(palette::DIM));
+        match ctx.app.store.error_for(top.0) {
+            Some(err) => put_centered(buf, chart, &format!("⚠ {err}"), ctx.theme.fg(palette::RED)),
+            None => put_centered(buf, chart, "no data in range", ctx.theme.fg(palette::DIM)),
+        }
         return;
     }
     let top_values = ctx.values(top.0);

@@ -81,7 +81,7 @@ pub enum Source {
     Tops,
 }
 
-const ALL_SOURCES: [Source; 8] = [
+pub const ALL_SOURCES: [Source; 8] = [
     Source::CountMetrics,
     Source::AverageMetrics,
     Source::CountTotals,

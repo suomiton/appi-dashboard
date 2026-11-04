@@ -21,7 +21,6 @@ use ratatui::widgets::{Block, Clear, Widget};
 
 use crate::app::{App, View};
 use crate::azure::auth::AuthError;
-use crate::data::format::fmt_age;
 use crate::ui::common::{Ctx, put_centered, put_line};
 use crate::ui::layout::{MIN_HEIGHT, MIN_WIDTH, centered};
 use crate::ui::theme::{Theme, palette};
@@ -198,12 +197,12 @@ fn header(buf: &mut Buffer, area: Rect, ctx: &Ctx, now: DateTime<FixedOffset>, m
     }
 
     let mut right: Vec<Span> = Vec::new();
-    if let (Some((_, err)), Some(ok)) = (&app.store.last_error, app.store.last_success) {
-        let age = ctx.now - ok;
-        if age > chrono::Duration::seconds(2 * app.refresh_secs as i64) {
-            right.push(ctx.s(format!("⚠ data {} old  ", fmt_age(age)), palette::YELLOW));
-            let _ = err;
-        }
+    if let Some(err) = app.store.current_error() {
+        let max = (area.width / 3).max(20) as usize;
+        right.push(ctx.s(
+            format!("⚠ {}  ", crate::data::format::truncate_width(err, max)),
+            palette::YELLOW,
+        ));
     }
     right.push(ctx.s(now.format("%H:%M:%S").to_string(), palette::CYAN));
     if area.width >= 120 {
@@ -491,6 +490,41 @@ pub(crate) mod tests {
         let out = text(&render(&app, mono, 160, 45));
         assert!(out.contains("no data in range"));
         assert!(out.contains("client —"), "legend shows dashes");
+    }
+
+    #[test]
+    fn errors_are_visible_when_nothing_loaded() {
+        use crate::azure::http::AzError;
+        use crate::data::dashboard::{DashboardUpdate, Source};
+        let inst = demo_instances().remove(0);
+        let mut app = App::new(Config::default(), Some(inst), TimeRange::H4, 30);
+        let mono = Instant::now();
+        app.on_tick(mono);
+        let mut u = DashboardUpdate::default();
+        for src in [
+            Source::CountMetrics,
+            Source::AverageMetrics,
+            Source::CountTotals,
+            Source::AverageTotals,
+            Source::AlertWindow,
+            Source::Scalars,
+            Source::UsersSessions,
+        ] {
+            u.errors.push((
+                src,
+                AzError::Http {
+                    status: 403,
+                    message: "AuthorizationFailed: no access".into(),
+                },
+            ));
+        }
+        app.on_data(DataEvent::Dashboard(u), mono, wall());
+        let out = text(&render(&app, mono, 160, 45));
+        assert!(out.contains("HTTP 403"), "{out}");
+        assert!(
+            !out.contains("no data in range"),
+            "errors are not shown as no data: {out}"
+        );
     }
 
     #[test]

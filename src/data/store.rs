@@ -6,7 +6,9 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::azure::http::AzError;
 use crate::data::catalog::SeriesId;
-use crate::data::dashboard::{AlertWindow, DashboardUpdate, FailureTops, Scalars, Series};
+use crate::data::dashboard::{
+    ALL_SOURCES, AlertWindow, DashboardUpdate, FailureTops, Scalars, Series, Source,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Timed<T> {
@@ -23,6 +25,8 @@ pub struct Store {
     pub tops: Option<Timed<FailureTops>>,
     pub last_success: Option<DateTime<Utc>>,
     pub last_error: Option<(DateTime<Utc>, String)>,
+    /// The current error of each source that failed on its last call.
+    pub source_errors: HashMap<Source, String>,
 }
 
 fn describe(e: &AzError) -> String {
@@ -33,7 +37,11 @@ impl Store {
     /// Overwrites only what the update carries; anything a failed source
     /// would have provided keeps its previous value (shown as stale).
     pub fn apply(&mut self, u: DashboardUpdate, at: DateTime<Utc>) {
+        for (source, e) in &u.errors {
+            self.source_errors.insert(*source, describe(e));
+        }
         for source in &u.succeeded {
+            self.source_errors.remove(source);
             let (specs, totals) = source.covers();
             for spec in specs {
                 if totals && !u.totals.contains_key(&spec.series) {
@@ -63,6 +71,24 @@ impl Store {
             None => self.last_success = Some(at),
             Some((_, e)) => self.last_error = Some((at, describe(e))),
         }
+    }
+
+    /// The current error of a source that provides `id`, if any.
+    pub fn error_for(&self, id: SeriesId) -> Option<&str> {
+        ALL_SOURCES
+            .iter()
+            .filter(|src| match id {
+                SeriesId::Users | SeriesId::Sessions => **src == Source::UsersSessions,
+                _ => src.covers().0.iter().any(|m| m.series == id),
+            })
+            .find_map(|src| self.source_errors.get(src).map(String::as_str))
+    }
+
+    /// The first current error, in source order, for the header.
+    pub fn current_error(&self) -> Option<&str> {
+        ALL_SOURCES
+            .iter()
+            .find_map(|src| self.source_errors.get(src).map(String::as_str))
     }
 
     pub fn clear(&mut self) {
@@ -188,6 +214,33 @@ mod tests {
             Some(3.0),
             "failed source keeps its value"
         );
+    }
+
+    #[test]
+    fn source_errors_are_tracked_and_cleared() {
+        let mut s = Store::default();
+        let mut bad = DashboardUpdate::default();
+        bad.errors.push((
+            Source::AverageMetrics,
+            AzError::Http {
+                status: 403,
+                message: "AuthorizationFailed: no access".into(),
+            },
+        ));
+        s.apply(bad, t0());
+        assert!(
+            s.error_for(SeriesId::ServerResponse)
+                .unwrap()
+                .contains("403")
+        );
+        assert_eq!(s.error_for(SeriesId::RequestsFailed), None);
+        let ok = DashboardUpdate {
+            succeeded: vec![Source::AverageMetrics],
+            ..Default::default()
+        };
+        s.apply(ok, t0());
+        assert_eq!(s.error_for(SeriesId::ServerResponse), None);
+        assert!(s.current_error().is_none());
     }
 
     #[test]
