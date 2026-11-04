@@ -110,6 +110,91 @@ pub fn transaction(operation_id: &str) -> String {
     )
 }
 
+fn browser_filter(browser: bool) -> &'static str {
+    if browser {
+        "client_Type == \"Browser\""
+    } else {
+        "client_Type != \"Browser\""
+    }
+}
+
+const FAILED_AVAILABILITY: &str = "tostring(success) in (\"0\", \"False\", \"false\")";
+
+pub fn exception_types(browser: bool, range: TimeRange) -> String {
+    let g = range.grain_minutes();
+    let f = browser_filter(browser);
+    format!(
+        "exceptions | where {f}
+| summarize n = sum(itemCount), detail = take_any(outerMessage) by type, bin(timestamp, {g}m)"
+    )
+}
+
+pub fn exception_occurrences(browser: bool, exception_type: &str) -> String {
+    let f = browser_filter(browser);
+    let t = kql_string(exception_type);
+    format!(
+        "exceptions | where type == {t} and {f}
+| top 50 by timestamp desc
+| project timestamp, operation_Name, cloud_RoleInstance, outerMessage, operation_Id"
+    )
+}
+
+pub fn failing_dependencies() -> String {
+    "dependencies | where tostring(success) == \"False\"
+| summarize n = sum(itemCount) by type, target, resultCode"
+        .to_string()
+}
+
+pub fn dependency_calls(dep_type: &str, target: &str) -> String {
+    let (t, g) = (kql_string(dep_type), kql_string(target));
+    format!(
+        "dependencies | where type == {t} and target == {g} and tostring(success) == \"False\"
+| top 50 by timestamp desc
+| project timestamp, name, resultCode, duration, operation_Id, operation_Name"
+    )
+}
+
+pub fn slow_endpoints() -> String {
+    "requests
+| summarize n = sum(itemCount), avg = sum(duration * itemCount) / sum(itemCount), p95 = percentile(duration, 95) by name
+| top 50 by p95 desc"
+        .to_string()
+}
+
+pub fn slow_requests(name: &str) -> String {
+    let x = kql_string(name);
+    format!(
+        "requests | where name == {x}
+| top 50 by duration desc
+| project timestamp, resultCode, duration, cloud_RoleInstance, operation_Id, id"
+    )
+}
+
+pub fn slow_pages() -> String {
+    "pageViews
+| summarize n = sum(itemCount), avg = sum(duration * itemCount) / sum(itemCount), p95 = percentile(duration, 95) by name
+| top 50 by p95 desc"
+        .to_string()
+}
+
+pub fn availability_tests() -> String {
+    format!(
+        "availabilityResults
+| summarize runs = sum(itemCount), failed = sumif(itemCount, {FAILED_AVAILABILITY}) by name, location
+| extend pct = 100.0 * (runs - failed) / runs
+| order by pct asc"
+    )
+}
+
+pub fn availability_failures(test: &str, location: &str) -> String {
+    let (n, l) = (kql_string(test), kql_string(location));
+    format!(
+        "availabilityResults | where name == {n} and location == {l} and {FAILED_AVAILABILITY}
+| top 50 by timestamp desc
+| project timestamp, duration, message"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +240,34 @@ mod tests {
     fn failure_tops_avoids_reserved_word_kind() {
         assert!(!failure_tops().contains("kind"));
         assert!(failure_tops().contains("section"));
+    }
+
+    #[test]
+    fn drill_builders_escape_inputs() {
+        let evil = r#"x" | take 1"#;
+        let esc = r#""x\" | take 1""#;
+        assert!(exception_occurrences(false, evil).contains(esc));
+        assert!(dependency_calls(evil, "t").contains(esc));
+        assert!(dependency_calls("t", evil).contains(esc));
+        assert!(slow_requests(evil).contains(esc));
+        assert!(availability_failures(evil, "l").contains(esc));
+        assert!(availability_failures("n", evil).contains(esc));
+    }
+
+    #[test]
+    fn browser_filter_and_bins() {
+        assert!(exception_types(true, TimeRange::H4).contains(r#"client_Type == "Browser""#));
+        assert!(exception_types(false, TimeRange::H4).contains(r#"client_Type != "Browser""#));
+        assert!(exception_types(false, TimeRange::H24).contains("bin(timestamp, 15m)"));
+        assert!(exception_occurrences(true, "T").contains(r#"client_Type == "Browser""#));
+        for q in [
+            failing_dependencies(),
+            slow_endpoints(),
+            slow_pages(),
+            availability_tests(),
+        ] {
+            assert!(!q.contains("kind"), "reserved word");
+        }
     }
 
     #[test]

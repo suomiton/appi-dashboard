@@ -78,7 +78,19 @@ pub fn hotkey(view: View, p: PanelId) -> Option<char> {
 pub fn drill_target(p: PanelId) -> Option<DrillTarget> {
     match p {
         PanelId::FailedRequests | PanelId::FailuresMain => Some(DrillTarget::FailingEndpoints),
-        _ => None,
+        PanelId::ExceptionsDeps => Some(DrillTarget::ExceptionTypes { browser: false }),
+        PanelId::BrowserExceptions => Some(DrillTarget::ExceptionTypes { browser: true }),
+        PanelId::DependencyFailures => Some(DrillTarget::FailingDependencies),
+        PanelId::ServerResponse => Some(DrillTarget::SlowEndpoints),
+        PanelId::PageLoad => Some(DrillTarget::SlowPages),
+        PanelId::Availability => Some(DrillTarget::AvailabilityTests),
+        PanelId::Cpu => Some(DrillTarget::InstanceBreakdown {
+            metric: crate::data::drill::InstanceMetric::Cpu,
+        }),
+        PanelId::MemoryIo => Some(DrillTarget::InstanceBreakdown {
+            metric: crate::data::drill::InstanceMetric::Memory,
+        }),
+        PanelId::Sessions | PanelId::Health => None,
     }
 }
 
@@ -135,6 +147,21 @@ impl DrillFrame {
                 l.rows.get(self.selected[0]).and_then(|r| r.next.clone())
             }
             FrameData::Ready(ScreenData::Endpoint(e)) => match self.sub {
+                0 => {
+                    e.exceptions
+                        .get(self.selected[0])
+                        .map(|x| DrillTarget::ExceptionOccurrences {
+                            browser: false,
+                            exception_type: x.name.clone(),
+                        })
+                }
+                1 => e
+                    .dependencies
+                    .get(self.selected[1])
+                    .map(|d| DrillTarget::DependencyCalls {
+                        dep_type: d.dep_type.clone(),
+                        target: d.target.clone(),
+                    }),
                 2 => e
                     .recent
                     .get(self.selected[2])

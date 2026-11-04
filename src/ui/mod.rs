@@ -628,6 +628,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn slow_endpoints_snapshot() {
+        let (app, mono) = drill_app(View::Overview, '3', &[]);
+        let t = render(&app, mono, 100, 30);
+        assert!(text(&t).contains("overview › slowest endpoints"));
+        insta::assert_snapshot!("slow_endpoints_100x30", t.backend());
+    }
+
+    #[test]
+    fn every_drillable_panel_renders() {
+        for (view, panel) in [
+            (View::Overview, '5'),
+            (View::Overview, '4'),
+            (View::Overview, '6'),
+            (View::Overview, '7'),
+            (View::Overview, '8'),
+            (View::Overview, '9'),
+            (View::Failures, '9'),
+        ] {
+            let (app, mono) = drill_app(view, panel, &[0]);
+            let out = text(&render(&app, mono, 100, 30));
+            assert!(!out.contains("not implemented"), "{view:?} {panel}: {out}");
+        }
+    }
+
+    #[test]
     fn drill_loading_and_failed_states() {
         let (mut app, mono) = drill_app(View::Overview, '2', &[]);
         app.drill[0].data = crate::app::FrameData::Loading;

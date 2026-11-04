@@ -9,6 +9,7 @@ use crate::azure::discovery::AppInstance;
 use crate::data::backend::Backend;
 use crate::data::catalog::{AVERAGE_METRICS, COUNT_METRICS};
 use crate::data::dashboard::{Source, View, refresh_dashboard};
+use crate::data::drill::{DrillTarget, InstanceMetric, ScreenData, load, row_count};
 use crate::data::time::TimeRange;
 
 fn num(v: f64) -> String {
@@ -156,6 +157,80 @@ pub async fn run_probe(
             t.exceptions.len()
         )?;
     }
+    if !drill_walk(backend, inst, range, out).await? {
+        ok = false;
+    }
+    Ok(ok)
+}
+
+/// Where the probe goes next from a loaded screen: the first row that opens
+/// something, so every query on the path is run once against real data.
+fn first_next(data: &ScreenData) -> Option<DrillTarget> {
+    match data {
+        ScreenData::List(l) => l.rows.iter().find_map(|r| r.next.clone()),
+        ScreenData::Endpoint(e) => e
+            .recent
+            .first()
+            .map(|r| DrillTarget::RequestDetail {
+                operation_id: r.operation_id.clone(),
+                request_id: Some(r.request_id.clone()).filter(|id| !id.is_empty()),
+            })
+            .or_else(|| {
+                e.exceptions
+                    .first()
+                    .map(|x| DrillTarget::ExceptionOccurrences {
+                        browser: false,
+                        exception_type: x.name.clone(),
+                    })
+            }),
+        ScreenData::Request(_) => None,
+    }
+}
+
+/// Loads every drill-down screen reachable from the dashboard (following
+/// the first row down each path), so KQL errors surface here instead of in
+/// the UI. Prints only screen names and row counts.
+async fn drill_walk(
+    backend: &dyn Backend,
+    inst: &AppInstance,
+    range: TimeRange,
+    out: &mut dyn Write,
+) -> std::io::Result<bool> {
+    let roots = [
+        DrillTarget::FailingEndpoints,
+        DrillTarget::ExceptionTypes { browser: false },
+        DrillTarget::ExceptionTypes { browser: true },
+        DrillTarget::FailingDependencies,
+        DrillTarget::SlowEndpoints,
+        DrillTarget::SlowPages,
+        DrillTarget::AvailabilityTests,
+        DrillTarget::InstanceBreakdown {
+            metric: InstanceMetric::Cpu,
+        },
+        DrillTarget::InstanceBreakdown {
+            metric: InstanceMetric::Memory,
+        },
+    ];
+    let mut ok = true;
+    for root in roots {
+        let mut target = Some(root);
+        let mut depth = 0;
+        while let Some(t) = target.take() {
+            match load(backend, inst, range, &t, chrono::Utc::now()).await {
+                Ok(data) => {
+                    writeln!(out, "[ok] drill {}: {} rows", t.crumb(), row_count(&data))?;
+                    if depth < 3 {
+                        target = first_next(&data);
+                    }
+                }
+                Err(e) => {
+                    ok = false;
+                    writeln!(out, "[FAIL] drill {}: {e}", t.crumb())?;
+                }
+            }
+            depth += 1;
+        }
+    }
     Ok(ok)
 }
 
@@ -193,6 +268,12 @@ mod tests {
         assert!(out.contains("[ok] summary users_5m=165"));
         assert!(!out.contains("[FAIL]"));
         assert!(!out.contains("00000000-0000"), "never prints IDs: {out}");
+        assert!(out.contains("[ok] drill failed requests:"), "{out}");
+        assert!(
+            out.contains("[ok] drill request:"),
+            "walks down to a request: {out}"
+        );
+        assert!(out.contains("[ok] drill memory per instance:"), "{out}");
     }
 
     #[tokio::test]

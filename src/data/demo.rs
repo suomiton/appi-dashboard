@@ -218,12 +218,222 @@ const DEMO_REQUESTS: [(&str, &str, i64); 4] = [
     ("op-9a0b1c2d", "req-0004", 20),
 ];
 
+/// (type, target, result code, failures) of the demo's failing dependencies.
+const DEMO_DEPENDENCIES: [(&str, &str, &str, i64); 3] = [
+    ("SQL", "demo-sql.database.windows.net | appdb", "-2", 9),
+    ("HTTP", "demo-func.azurewebsites.net", "502", 3),
+    ("Azure blob", "demostorage", "409", 1),
+];
+
+fn demo_exception_types(browser: bool) -> &'static [(&'static str, i64, &'static str)] {
+    if browser {
+        &[
+            (
+                "TypeError",
+                41,
+                "Cannot read properties of undefined (reading 'id')",
+            ),
+            ("ChunkLoadError", 12, "Loading chunk 42 failed."),
+            (
+                "ResizeObserverError",
+                7,
+                "ResizeObserver loop limit exceeded",
+            ),
+        ]
+    } else {
+        &[
+            ("SqlException", 9, SQL_TIMEOUT),
+            ("HttpRequestException", 3, BAD_GATEWAY),
+            ("TaskCanceledException", 2, "A task was canceled."),
+        ]
+    }
+}
+
 const SQL_TIMEOUT: &str = "Execution Timeout Expired. The timeout period elapsed prior to completion of the operation or the server is not responding.";
 const BAD_GATEWAY: &str = "Response status code does not indicate success: 502 (Bad Gateway).";
 
 impl DemoBackend {
     fn now(&self) -> DateTime<Utc> {
         self.fixed_now.unwrap_or_else(Utc::now)
+    }
+
+    /// Answers the drill-down list queries added for the other panels.
+    fn drill_query(&self, q: &str, timespan: &str) -> Option<Table> {
+        let range = TimeRange::ALL
+            .into_iter()
+            .find(|r| r.iso() == timespan)
+            .unwrap_or_default();
+        for browser in [false, true] {
+            if TimeRange::ALL
+                .iter()
+                .any(|r| q == kql::exception_types(browser, *r))
+            {
+                return Some(self.exception_types(browser, range));
+            }
+            for (ty, _, _) in demo_exception_types(browser) {
+                if q == kql::exception_occurrences(browser, ty) {
+                    return Some(self.exception_occurrences(browser, ty));
+                }
+            }
+        }
+        if q == kql::failing_dependencies() {
+            return Some(table(
+                &["type", "target", "resultCode", "n"],
+                DEMO_DEPENDENCIES
+                    .iter()
+                    .map(|(ty, target, code, n)| json!([ty, target, code, n]))
+                    .collect(),
+            ));
+        }
+        for (ty, target, code, _) in DEMO_DEPENDENCIES {
+            if q == kql::dependency_calls(ty, target) {
+                let rows = DEMO_REQUESTS
+                    .iter()
+                    .take(3)
+                    .map(|(op, _, mins)| {
+                        json!([
+                            (self.now() - Duration::minutes(*mins)).to_rfc3339(),
+                            "INSERT orders",
+                            code,
+                            29950.0,
+                            op,
+                            DEMO_ENDPOINTS[0]
+                        ])
+                    })
+                    .collect();
+                return Some(table(
+                    &[
+                        "timestamp",
+                        "name",
+                        "resultCode",
+                        "duration",
+                        "operation_Id",
+                        "operation_Name",
+                    ],
+                    rows,
+                ));
+            }
+        }
+        let latency = |names: &[(&str, f64, f64, f64)]| {
+            table(
+                &["name", "n", "avg", "p95"],
+                names
+                    .iter()
+                    .map(|(name, n, avg, p95)| json!([name, n, avg, p95]))
+                    .collect(),
+            )
+        };
+        if q == kql::slow_endpoints() {
+            return Some(latency(&[
+                ("GET /api/reports/export", 312.0, 2300.0, 8100.0),
+                ("POST /api/orders", 1840.0, 420.0, 1900.0),
+                ("GET /api/sites/{id}/readings", 22040.0, 95.0, 310.0),
+                ("POST /api/auth/token", 5120.0, 60.0, 140.0),
+            ]));
+        }
+        if q == kql::slow_pages() {
+            return Some(latency(&[
+                ("Reports", 420.0, 1800.0, 4200.0),
+                ("Dashboard", 3100.0, 560.0, 1300.0),
+                ("Sites", 1500.0, 410.0, 900.0),
+            ]));
+        }
+        for name in DEMO_ENDPOINTS {
+            if q == kql::slow_requests(name) {
+                let rows = DEMO_REQUESTS
+                    .iter()
+                    .map(|(op, req, mins)| {
+                        json!([
+                            (self.now() - Duration::minutes(*mins * 3)).to_rfc3339(),
+                            "200",
+                            8100.0 - *mins as f64 * 100.0,
+                            "demo-host-0",
+                            op,
+                            req
+                        ])
+                    })
+                    .collect();
+                return Some(table(
+                    &[
+                        "timestamp",
+                        "resultCode",
+                        "duration",
+                        "cloud_RoleInstance",
+                        "operation_Id",
+                        "id",
+                    ],
+                    rows,
+                ));
+            }
+        }
+        if q == kql::availability_tests() {
+            return Some(table(
+                &["name", "location", "runs", "failed", "pct"],
+                vec![
+                    json!(["home page", "West Europe", 48, 1, 97.9]),
+                    json!(["home page", "North Europe", 48, 0, 100.0]),
+                    json!(["home page", "UK South", 48, 0, 100.0]),
+                ],
+            ));
+        }
+        if q == kql::availability_failures("home page", "West Europe") {
+            return Some(table(
+                &["timestamp", "duration", "message"],
+                vec![json!([
+                    (self.now() - Duration::minutes(95)).to_rfc3339(),
+                    30000.0,
+                    "Request timed out after 30 seconds."
+                ])],
+            ));
+        }
+        let _ = range;
+        None
+    }
+
+    fn exception_types(&self, browser: bool, range: TimeRange) -> Table {
+        let bins = self.bins(range);
+        let n = bins.len();
+        let mut rows = Vec::new();
+        for (k, (ty, total, msg)) in demo_exception_types(browser).iter().enumerate() {
+            let per = (*total as usize).max(1);
+            for j in 0..per {
+                let bin = bins[(n - 1).saturating_sub((j * 7 + k * 3) % n.max(1))].to_rfc3339();
+                rows.push(json!([ty, msg, bin, 1]));
+            }
+        }
+        table(&["type", "detail", "timestamp", "n"], rows)
+    }
+
+    fn exception_occurrences(&self, browser: bool, ty: &str) -> Table {
+        let msg = demo_exception_types(browser)
+            .iter()
+            .find(|(t, _, _)| *t == ty)
+            .map_or("", |(_, _, m)| *m);
+        let rows = DEMO_REQUESTS
+            .iter()
+            .take(3)
+            .map(|(op, _, mins)| {
+                let op = if browser { "" } else { *op };
+                let operation = if browser { "" } else { DEMO_ENDPOINTS[0] };
+                json!([
+                    (self.now() - Duration::minutes(*mins)).to_rfc3339(),
+                    operation,
+                    "demo-host-1",
+                    msg,
+                    op
+                ])
+            })
+            .collect();
+        table(
+            &[
+                "timestamp",
+                "operation_Name",
+                "cloud_RoleInstance",
+                "outerMessage",
+                "operation_Id",
+            ],
+            rows,
+        )
     }
 
     fn request_start(&self, op: &str) -> DateTime<Utc> {
@@ -559,6 +769,9 @@ impl Backend for DemoBackend {
                 .find(|r| r.iso() == timespan)
                 .unwrap_or_default();
             return Ok(self.failing_endpoints(range));
+        }
+        if let Some(t) = self.drill_query(kql_text, timespan) {
+            return Ok(t);
         }
         for (op, req, _) in DEMO_REQUESTS {
             if kql_text == kql::request_row(op, Some(req)) || kql_text == kql::request_row(op, None)
