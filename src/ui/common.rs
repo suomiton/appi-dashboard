@@ -101,6 +101,29 @@ pub fn put_centered(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
     buf.set_string(x, area.y + area.height / 2, t, style);
 }
 
+/// "no data in range", or the error that is keeping the data away.
+fn no_data(buf: &mut Buffer, area: Rect, ctx: &Ctx, id: SeriesId) {
+    match ctx.app.store.error_for(id) {
+        Some(err) => put_centered(buf, area, &format!("⚠ {err}"), ctx.theme.fg(palette::RED)),
+        None => put_centered(buf, area, "no data in range", ctx.theme.fg(palette::DIM)),
+    }
+}
+
+/// Count metrics can come back as zero-filled buckets even when the
+/// telemetry behind them does not exist at all (no browser SDK, no
+/// availability tests). Such a count is "no data", not "0", unless it has
+/// a non-zero value.
+fn counts_without_telemetry(ctx: &Ctx, id: SeriesId) -> bool {
+    let companion = match id {
+        SeriesId::ExceptionsBrowser => SeriesId::PageLoadTotal,
+        SeriesId::AvailabilityCount => SeriesId::Availability,
+        _ => return false,
+    };
+    let nonzero =
+        ctx.values(id).iter().flatten().any(|v| *v > 0.0) || ctx.total(id).is_some_and(|t| t > 0.0);
+    !ctx.app.store.has_data(companion) && !nonzero
+}
+
 pub struct ChartSpec<'a> {
     pub panel: PanelId,
     pub title: &'a str,
@@ -124,6 +147,10 @@ pub fn chart_panel(buf: &mut Buffer, area: Rect, ctx: &Ctx, spec: ChartSpec) {
     }
     .render(area, buf);
     let inner = PanelBlock::inner(area);
+    if counts_without_telemetry(ctx, spec.top.0) {
+        no_data(buf, inner.intersection(buf.area), ctx, spec.top.0);
+        return;
+    }
     chart_body(
         buf,
         inner,
@@ -162,10 +189,7 @@ pub fn chart_body(
     let has = |id: SeriesId| ctx.app.store.has_data(id);
     let any = has(top.0) || bottom.is_some_and(|(b, _)| has(b));
     if !any {
-        match ctx.app.store.error_for(top.0) {
-            Some(err) => put_centered(buf, chart, &format!("⚠ {err}"), ctx.theme.fg(palette::RED)),
-            None => put_centered(buf, chart, "no data in range", ctx.theme.fg(palette::DIM)),
-        }
+        no_data(buf, chart, ctx, top.0);
         return;
     }
     let top_values = ctx.values(top.0);

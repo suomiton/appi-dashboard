@@ -545,6 +545,57 @@ pub(crate) mod tests {
         }
     }
 
+    fn rect_text(t: &Terminal<TestBackend>, r: Rect) -> String {
+        let buf = t.backend().buffer();
+        (r.y..r.y + r.height)
+            .map(|y| {
+                (r.x..r.x + r.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn zero_filled_counts_without_telemetry_are_no_data() {
+        let (mut app, mono) = demo_app(View::Overview);
+        // An app without browser telemetry and without availability tests:
+        // the metrics API may still return zero-valued count buckets.
+        for id in [
+            SeriesId::PageLoadTotal,
+            SeriesId::PageLoadNetwork,
+            SeriesId::PageLoadProcessing,
+            SeriesId::PageLoadSend,
+            SeriesId::PageLoadReceive,
+            SeriesId::Availability,
+        ] {
+            app.store.series.remove(&id);
+            app.store.totals.remove(&id);
+        }
+        for id in [SeriesId::ExceptionsBrowser, SeriesId::AvailabilityCount] {
+            for p in &mut app.store.series.get_mut(&id).unwrap().value.points {
+                p.1 = Some(0.0);
+            }
+            app.store.totals.get_mut(&id).unwrap().value = 0.0;
+        }
+        let t = render(&app, mono, 160, 45);
+        let browser = layout::overview_layout(Rect::new(0, 0, 160, 45)).panels[7];
+        assert!(
+            rect_text(&t, browser).contains("no data in range"),
+            "{}",
+            rect_text(&t, browser)
+        );
+        app.view = View::Failures;
+        let t = render(&app, mono, 160, 45);
+        let tests_panel = layout::failures_layout(Rect::new(0, 0, 160, 45)).panels[7];
+        assert!(
+            rect_text(&t, tests_panel).contains("no data in range"),
+            "{}",
+            rect_text(&t, tests_panel)
+        );
+    }
+
     #[test]
     fn long_names_do_not_panic() {
         let (mut app, mono) = demo_app(View::Failures);
