@@ -357,7 +357,7 @@ pub fn portal_logs_link(tenant_id: &str, resource_id: &str, kql: &str, timespan:
     let bytes = gz.finish().unwrap_or_default();
     let q = base64::engine::general_purpose::STANDARD.encode(bytes);
     format!(
-        "https://portal.azure.com/#@{tenant_id}/blade/Microsoft_OperationsManagementSuite_Workspace/Logs.ReactView/resourceId/{}/source/LogsBlade.AnalyticsShareLinkToQuery/q/{}/timespan/{timespan}",
+        "https://portal.azure.com/#@{tenant_id}/blade/Microsoft_Azure_Monitoring_Logs/LogsBlade/resourceId/{}/source/LogsBlade.AnalyticsShareLinkToQuery/q/{}/timespan/{timespan}",
         pct(resource_id),
         pct(&q)
     )
@@ -1312,7 +1312,7 @@ pub(crate) mod tests {
         let kql = "union requests, dependencies | where operation_Id == \"op-1\"";
         let rid = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/demo-rg/providers/microsoft.insights/components/demo-app-prod";
         let link = portal_logs_link("tenant-1", rid, kql, "PT4H");
-        assert!(link.starts_with("https://portal.azure.com/#@tenant-1/blade/Microsoft_OperationsManagementSuite_Workspace/Logs.ReactView/resourceId/%2Fsubscriptions%2F"));
+        assert!(link.starts_with("https://portal.azure.com/#@tenant-1/blade/Microsoft_Azure_Monitoring_Logs/LogsBlade/resourceId/%2Fsubscriptions%2F"), "{link}");
         assert!(link.ends_with("/timespan/PT4H"));
         let q = link.split("/q/").nth(1).unwrap().split('/').next().unwrap();
         let decoded = url::form_urlencoded::parse(format!("x={q}").as_bytes())

@@ -1507,7 +1507,7 @@ pub(crate) mod tests {
         let mut a = request_app();
         let cmds = a.on_key(ch('o'), Instant::now());
         assert!(
-            matches!(cmds.as_slice(), [Command::OpenUrl(u)] if u.contains("Logs.ReactView") && u.contains("/timespan/PT4H"))
+            matches!(cmds.as_slice(), [Command::OpenUrl(u)] if u.contains("Microsoft_Azure_Monitoring_Logs/LogsBlade") && u.contains("/timespan/PT4H"))
         );
         a.on_key(k(KeyCode::Esc), Instant::now());
         let cmds = a.on_key(ch('o'), Instant::now());
