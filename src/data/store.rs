@@ -33,6 +33,17 @@ impl Store {
     /// Overwrites only what the update carries; anything a failed source
     /// would have provided keeps its previous value (shown as stale).
     pub fn apply(&mut self, u: DashboardUpdate, at: DateTime<Utc>) {
+        for source in &u.succeeded {
+            let (specs, totals) = source.covers();
+            for spec in specs {
+                if totals && !u.totals.contains_key(&spec.series) {
+                    self.totals.remove(&spec.series);
+                }
+                if !totals && !u.series.contains_key(&spec.series) {
+                    self.series.remove(&spec.series);
+                }
+            }
+        }
         for (id, s) in u.series {
             self.series.insert(id, Timed { value: s, at });
         }
@@ -138,6 +149,44 @@ mod tests {
         assert_eq!(
             s.age(SeriesId::RequestsFailed, later),
             Some(chrono::Duration::minutes(5))
+        );
+    }
+
+    #[test]
+    fn successful_source_drops_values_it_no_longer_reports() {
+        use crate::data::alerts::{AlertConfig, AlertKind, evaluate};
+        let mut s = Store::default();
+        let mut u = DashboardUpdate::default();
+        u.totals.insert(SeriesId::ServerResponse, 1500.0);
+        u.series
+            .insert(SeriesId::ServerResponse, series(Some(1500.0)));
+        u.totals.insert(SeriesId::RequestsFailed, 3.0);
+        u.succeeded = vec![
+            Source::AverageTotals,
+            Source::AverageMetrics,
+            Source::CountTotals,
+        ];
+        s.apply(u, t0());
+        assert!(evaluate(&AlertConfig::default(), &s).is(AlertKind::Response));
+
+        // Two hours later the averages succeed but carry no samples (app down),
+        // and the count totals call fails.
+        let mut later = DashboardUpdate {
+            succeeded: vec![Source::AverageTotals, Source::AverageMetrics],
+            ..Default::default()
+        };
+        later
+            .errors
+            .push((Source::CountTotals, AzError::Network("down".into())));
+        let t2 = t0() + chrono::Duration::hours(2);
+        s.apply(later, t2);
+        assert_eq!(s.total(SeriesId::ServerResponse), None);
+        assert!(!s.has_data(SeriesId::ServerResponse));
+        assert!(!evaluate(&AlertConfig::default(), &s).is(AlertKind::Response));
+        assert_eq!(
+            s.total(SeriesId::RequestsFailed),
+            Some(3.0),
+            "failed source keeps its value"
         );
     }
 

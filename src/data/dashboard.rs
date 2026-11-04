@@ -81,6 +81,31 @@ pub enum Source {
     Tops,
 }
 
+const ALL_SOURCES: [Source; 8] = [
+    Source::CountMetrics,
+    Source::AverageMetrics,
+    Source::CountTotals,
+    Source::AverageTotals,
+    Source::AlertWindow,
+    Source::Scalars,
+    Source::UsersSessions,
+    Source::Tops,
+];
+
+impl Source {
+    /// The series a source fills (`totals == false`) or the totals it
+    /// fills (`totals == true`).
+    pub fn covers(self) -> (&'static [crate::data::catalog::MetricSpec], bool) {
+        match self {
+            Source::CountMetrics => (COUNT_METRICS, false),
+            Source::AverageMetrics => (AVERAGE_METRICS, false),
+            Source::CountTotals => (COUNT_METRICS, true),
+            Source::AverageTotals => (AVERAGE_METRICS, true),
+            _ => (&[], false),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DashboardUpdate {
     pub series: HashMap<SeriesId, Series>,
@@ -89,6 +114,9 @@ pub struct DashboardUpdate {
     pub alert_window: Option<AlertWindow>,
     pub tops: Option<FailureTops>,
     pub errors: Vec<(Source, AzError)>,
+    /// Sources whose call succeeded. A successful source that omits a
+    /// series or total means "no data now", not "keep the old value".
+    pub succeeded: Vec<Source>,
 }
 
 fn request(
@@ -248,6 +276,15 @@ pub async fn refresh_dashboard(
         Some(Err(e)) => u.errors.push((Source::Tops, e)),
         None => {}
     }
+    let attempted: &[Source] = match view {
+        View::Failures => &ALL_SOURCES,
+        View::Overview => &ALL_SOURCES[..7],
+    };
+    u.succeeded = attempted
+        .iter()
+        .copied()
+        .filter(|s| !u.errors.iter().any(|(e, _)| e == s))
+        .collect();
     u
 }
 
@@ -415,6 +452,7 @@ pub(crate) mod tests {
         let b = fixture_backend();
         let u = refresh_dashboard(&b, &demo_instance(), TimeRange::H4, View::Failures, now()).await;
         assert!(u.errors.is_empty(), "{:?}", u.errors);
+        assert_eq!(u.succeeded.len(), 8, "every source reports success");
         assert_eq!(u.series[&SeriesId::RequestsFailed].points.len(), 48);
         assert_eq!(u.totals[&SeriesId::RequestsFailed], 24.0);
         assert_eq!(u.alert_window.as_ref().unwrap().failed_5m, 12.0);
