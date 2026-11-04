@@ -59,17 +59,18 @@ pub fn fmt_ms(ms: f64) -> String {
     }
 }
 
+/// Decimal (1000-based) units, matching how the Azure portal shows bytes.
 pub fn fmt_bytes(b: f64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = b;
     let mut i = 0;
-    while v.abs() >= 1024.0 && i + 1 < UNITS.len() {
-        v /= 1024.0;
+    while v.abs() >= 1000.0 && i + 1 < UNITS.len() {
+        v /= 1000.0;
         i += 1;
     }
     let (s, overflow) = sig3(v);
     if overflow && i + 1 < UNITS.len() {
-        return format!("{} {}", sig3(v / 1024.0).0, UNITS[i + 1]);
+        return format!("{} {}", sig3(v / 1000.0).0, UNITS[i + 1]);
     }
     format!("{s} {}", UNITS[i])
 }
@@ -143,10 +144,12 @@ mod tests {
 
     #[test]
     fn bytes() {
-        assert_eq!(fmt_bytes(11.72 * 1024f64.powi(3)), "11.7 GB");
-        assert_eq!(fmt_bytes(12.9 * 1024f64.powi(2)), "12.9 MB");
+        // Decimal units, as the Azure portal shows them.
+        assert_eq!(fmt_bytes(11_702_066_050.), "11.7 GB");
+        assert_eq!(fmt_bytes(12_900_000.), "12.9 MB");
         assert_eq!(fmt_bytes(512.), "512 B");
-        assert_eq!(fmt_rate_bytes(12.9 * 1024f64.powi(2)), "12.9 MB/s");
+        assert_eq!(fmt_bytes(999_600.), "1 MB");
+        assert_eq!(fmt_rate_bytes(256_961.86), "257 KB/s");
     }
 
     #[test]

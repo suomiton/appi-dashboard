@@ -15,8 +15,8 @@ use crate::data::kql;
 use crate::data::time::TimeRange;
 
 const ZERO: &str = "00000000-0000-0000-0000-000000000000";
-const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-const MIB: f64 = 1024.0 * 1024.0;
+const GB: f64 = 1e9;
+const MB: f64 = 1e6;
 
 pub fn demo_instances() -> Vec<AppInstance> {
     ["demo-app-prod", "demo-app-staging"]
@@ -133,14 +133,15 @@ impl DemoBackend {
             "browserTimings/networkDuration" => 120.0 + 60.0 * n,
             "browserTimings/processingDuration" => 300.0 + 80.0 * n,
             "browserTimings/sendDuration" => 60.0 + 40.0 * n,
+            "browserTimings/receiveDuration" => 20.0 + 15.0 * n,
             "performanceCounters/processCpuPercentage" => {
                 0.25 + 0.2 * n + if n2 < 0.07 { 3.0 } else { 0.0 }
             }
             "performanceCounters/memoryAvailableBytes" => {
-                (11.7 + 0.25 * ((i as f64) / 7.0).sin() + 0.05 * n) * GIB
+                (11.7 + 0.25 * ((i as f64) / 7.0).sin() + 0.05 * n) * GB
             }
             "performanceCounters/processIOBytesPerSecond" => {
-                12.9 * MIB * (0.7 + 0.6 * n) + if n2 < 0.02 { 500.0 * MIB } else { 0.0 }
+                12.9 * MB * (0.7 + 0.6 * n) + if n2 < 0.02 { 500.0 * MB } else { 0.0 }
             }
             "availabilityResults/availabilityPercentage" => 100.0,
             _ => return None,
@@ -162,9 +163,10 @@ impl DemoBackend {
             "browserTimings/networkDuration" => 148.95,
             "browserTimings/processingDuration" => 335.5,
             "browserTimings/sendDuration" => 80.28,
+            "browserTimings/receiveDuration" => 27.4,
             "performanceCounters/processCpuPercentage" => 0.3137,
-            "performanceCounters/memoryAvailableBytes" => 11.72 * GIB,
-            "performanceCounters/processIOBytesPerSecond" => 12.9 * MIB,
+            "performanceCounters/memoryAvailableBytes" => 11.72 * GB,
+            "performanceCounters/processIOBytesPerSecond" => 12.9 * MB,
             "availabilityResults/availabilityPercentage" => 100.0,
             _ => return None,
         })

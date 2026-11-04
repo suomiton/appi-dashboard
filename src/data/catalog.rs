@@ -17,6 +17,7 @@ pub enum SeriesId {
     PageLoadNetwork,
     PageLoadProcessing,
     PageLoadSend,
+    PageLoadReceive,
     ProcessCpu,
     ProcessorCpu,
     MemoryAvailable,
@@ -56,6 +57,7 @@ pub const AVERAGE_METRICS: &[MetricSpec] = &[
         "browserTimings/processingDuration",
     ),
     spec(SeriesId::PageLoadSend, "browserTimings/sendDuration"),
+    spec(SeriesId::PageLoadReceive, "browserTimings/receiveDuration"),
     spec(
         SeriesId::ProcessCpu,
         "performanceCounters/processCpuPercentage",
@@ -106,7 +108,7 @@ mod tests {
             assert!(group.len() <= 20);
         }
         assert_eq!(COUNT_METRICS.len(), 6);
-        assert_eq!(AVERAGE_METRICS.len(), 10);
+        assert_eq!(AVERAGE_METRICS.len(), 11);
         assert_eq!(ALERT_METRICS.len(), 3);
     }
 
@@ -119,6 +121,10 @@ mod tests {
         assert_eq!(
             series_for("performanceCounters/processIOBytesPerSecond"),
             Some(SeriesId::ProcessIo)
+        );
+        assert_eq!(
+            series_for("browserTimings/receiveDuration"),
+            Some(SeriesId::PageLoadReceive)
         );
         assert_eq!(series_for("nope"), None);
     }
