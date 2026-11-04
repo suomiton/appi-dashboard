@@ -68,7 +68,14 @@ pub struct AzCliTokenSource {
     program: String,
     cache: StdMutex<HashMap<Audience, CachedToken>>,
     fetch_locks: HashMap<Audience, tokio::sync::Mutex<()>>,
+    /// The last failed `az` run per audience, shared with callers that were
+    /// waiting on it and reused for `failure_ttl`, so a signed-out session
+    /// does not run `az` once per caller.
+    failures: StdMutex<HashMap<Audience, (std::time::Instant, AuthError)>>,
+    failure_ttl: Duration,
 }
+
+const FAILURE_TTL: Duration = Duration::from_secs(10);
 
 impl Default for AzCliTokenSource {
     fn default() -> Self {
@@ -89,7 +96,22 @@ impl AzCliTokenSource {
                 .iter()
                 .map(|a| (*a, tokio::sync::Mutex::new(())))
                 .collect(),
+            failures: StdMutex::new(HashMap::new()),
+            failure_ttl: FAILURE_TTL,
         }
+    }
+
+    pub fn with_failure_ttl(mut self, ttl: Duration) -> Self {
+        self.failure_ttl = ttl;
+        self
+    }
+
+    fn recent_failure(&self, aud: Audience) -> Option<AuthError> {
+        let failures = self.failures.lock().unwrap_or_else(|e| e.into_inner());
+        failures
+            .get(&aud)
+            .filter(|(at, _)| at.elapsed() < self.failure_ttl)
+            .map(|(_, e)| e.clone())
     }
 
     fn cached(&self, aud: Audience) -> Option<String> {
@@ -137,16 +159,35 @@ impl TokenSource for AzCliTokenSource {
         if let Some(t) = self.cached(aud) {
             return Ok(t);
         }
+        if let Some(e) = self.recent_failure(aud) {
+            return Err(e);
+        }
         let lock = self
             .fetch_locks
             .get(&aud)
             .ok_or_else(|| AuthError::Other("unknown audience".into()))?;
         let _guard = lock.lock().await;
-        // Another caller may have fetched while we waited.
+        // Another caller may have fetched (or failed) while we waited.
         if let Some(t) = self.cached(aud) {
             return Ok(t);
         }
-        let fresh = self.run_az(aud).await?;
+        if let Some(e) = self.recent_failure(aud) {
+            return Err(e);
+        }
+        let fresh = match self.run_az(aud).await {
+            Ok(t) => t,
+            Err(e) => {
+                self.failures
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(aud, (std::time::Instant::now(), e.clone()));
+                return Err(e);
+            }
+        };
+        self.failures
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&aud);
         let token = fresh.access_token.clone();
         self.cache
             .lock()
@@ -373,6 +414,57 @@ mod tests {
         let src = AzCliTokenSource::with_program(program);
         src.token(Audience::Arm).await.unwrap();
         src.token(Audience::Arm).await.unwrap();
+        assert_eq!(count_lines(&counter), 2);
+    }
+
+    /// A fake `az` that sleeps, counts its runs and fails as if signed out.
+    #[cfg(unix)]
+    fn failing_az(dir: &std::path::Path) -> (String, std::path::PathBuf) {
+        let counter = dir.join("count");
+        let script = dir.join("failing-az");
+        let body = format!(
+            "#!/bin/sh\nsleep 1\necho x >> '{}'\necho \"ERROR: Please run 'az login' to setup account.\" >&2\nexit 1\n",
+            counter.display()
+        );
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(r#"printf '%s' "$1" > "$2" && chmod 755 "$2""#)
+            .arg("sh")
+            .arg(&body)
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        (script.display().to_string(), counter)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn failed_az_run_is_shared_and_briefly_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let (program, counter) = failing_az(dir.path());
+        let src = std::sync::Arc::new(AzCliTokenSource::with_program(program));
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let s = src.clone();
+            handles.push(tokio::spawn(async move { s.token(Audience::Arm).await }));
+        }
+        for h in handles {
+            assert!(matches!(h.await.unwrap(), Err(AuthError::NotLoggedIn(_))));
+        }
+        assert_eq!(count_lines(&counter), 1, "waiters share the failed run");
+        assert!(src.token(Audience::Arm).await.is_err());
+        assert_eq!(count_lines(&counter), 1, "failure remembered briefly");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remembered_failure_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let (program, counter) = failing_az(dir.path());
+        let src = AzCliTokenSource::with_program(program).with_failure_ttl(Duration::ZERO);
+        assert!(src.token(Audience::Arm).await.is_err());
+        assert!(src.token(Audience::Arm).await.is_err());
         assert_eq!(count_lines(&counter), 2);
     }
 
