@@ -39,6 +39,9 @@ pub fn demo_instances() -> Vec<AppInstance> {
 
 pub struct DemoBackend {
     seed: u64,
+    /// When set, time-relative demo data is anchored here instead of the
+    /// real clock, so tests and snapshots are reproducible.
+    fixed_now: Option<DateTime<Utc>>,
 }
 
 impl Default for DemoBackend {
@@ -72,7 +75,17 @@ fn step_minutes(interval: Interval, start: DateTime<Utc>, end: DateTime<Utc>) ->
 
 impl DemoBackend {
     pub fn new() -> Self {
-        Self { seed: 0x5eed }
+        Self {
+            seed: 0x5eed,
+            fixed_now: None,
+        }
+    }
+
+    pub fn at(now: DateTime<Utc>) -> Self {
+        Self {
+            fixed_now: Some(now),
+            ..Self::new()
+        }
     }
 
     /// One bucket of `metric` starting at `at`, `step` minutes long.
@@ -174,7 +187,7 @@ impl DemoBackend {
 
     fn users_sessions(&self, range: TimeRange) -> Table {
         let g = range.grain_minutes();
-        let now = Utc::now();
+        let now = self.fixed_now.unwrap_or_else(Utc::now);
         let end = now - Duration::seconds(now.timestamp() % (g * 60));
         let n = range.minutes() / g;
         let rows = (0..n)
@@ -239,12 +252,7 @@ impl Backend for DemoBackend {
         Ok(out)
     }
 
-    async fn query(
-        &self,
-        _app_id: &str,
-        kql_text: &str,
-        _timespan: &str,
-    ) -> Result<Table, AzError> {
+    async fn query(&self, _app_id: &str, kql_text: &str, timespan: &str) -> Result<Table, AzError> {
         if kql_text == kql::summary_scalars() {
             return Ok(table(
                 &[
@@ -279,9 +287,11 @@ impl Backend for DemoBackend {
                 ],
             ));
         }
+        // Ranges sharing a grain produce identical KQL; the timespan decides.
         if let Some(range) = TimeRange::ALL
             .into_iter()
-            .find(|r| kql_text == kql::users_sessions_series(*r))
+            .filter(|r| kql_text == kql::users_sessions_series(*r))
+            .find(|r| r.iso() == timespan)
         {
             return Ok(self.users_sessions(range));
         }
@@ -313,6 +323,20 @@ mod tests {
             s.tops.as_ref().unwrap().value.endpoints[0].name,
             "POST /api/orders"
         );
+    }
+
+    #[tokio::test]
+    async fn fixed_clock_makes_users_series_reproducible() {
+        use chrono::TimeZone;
+        let t = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 4, 13, 6, 42)
+            .unwrap();
+        let q = crate::data::kql::users_sessions_series(TimeRange::H1);
+        let a = DemoBackend::at(t).query("x", &q, "PT1H").await.unwrap();
+        let b = DemoBackend::at(t).query("x", &q, "PT1H").await.unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 60);
+        assert_eq!(a.str(59, "timestamp"), Some("2026-11-04T13:05:00+00:00"));
     }
 
     #[tokio::test]
