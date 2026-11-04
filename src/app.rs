@@ -83,6 +83,9 @@ pub enum DataRequest {
     Discover,
 }
 
+/// Each event moves through the channel exactly once, so the size
+/// difference between variants costs nothing worth a heap allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum DataEvent {
     Dashboard(DashboardUpdate),
