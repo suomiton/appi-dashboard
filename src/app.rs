@@ -82,6 +82,9 @@ pub fn drill_target(p: PanelId) -> Option<DrillTarget> {
     }
 }
 
+/// Frames live in a short stack (a handful at most), so the size
+/// difference between variants is not worth boxing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum FrameData {
     Loading,
