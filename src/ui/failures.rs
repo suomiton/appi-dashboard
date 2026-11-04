@@ -101,9 +101,16 @@ fn top_lists(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
     match ctx.app.store.tops.as_ref().map(|t| &t.value) {
         None => lines.push(Line::from(ctx.s("loading…", palette::DIM))),
         Some(tops) => {
-            lines.push(Line::from(
-                ctx.s("top failing endpoints · 15m", palette::DIM),
-            ));
+            let age = ctx.app.store.tops.as_ref().map(|t| ctx.now - t.at);
+            let limit = chrono::Duration::seconds(ctx.app.refresh_secs as i64 + 60);
+            let mut heading = vec![ctx.s("top failing endpoints · 15m", palette::DIM)];
+            if let Some(age) = age.filter(|a| *a > limit) {
+                heading.push(ctx.s(
+                    format!(" · {} old", crate::data::format::fmt_age(age)),
+                    palette::YELLOW,
+                ));
+            }
+            lines.push(Line::from(heading));
             if tops.endpoints.is_empty() {
                 lines.push(Line::from(ctx.s("none", palette::GREEN)));
             }

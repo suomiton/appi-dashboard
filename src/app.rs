@@ -301,6 +301,9 @@ pub struct App {
     /// Set when the range or instance changes while a refresh is in flight:
     /// that refresh's result belongs to the old selection and is dropped.
     discard_in_flight: bool,
+    /// Set when the user switched to Failures while an Overview refresh was
+    /// running: refetch as soon as it lands so the top lists appear.
+    refetch_after_in_flight: bool,
     pub picker: Option<PickerState>,
     /// Open drill-down screens, innermost last.
     pub drill: Vec<DrillFrame>,
@@ -329,6 +332,7 @@ impl App {
             refreshing: false,
             next_refresh: None,
             discard_in_flight: false,
+            refetch_after_in_flight: false,
             picker: None,
             drill: Vec::new(),
             next_frame_id: 1,
@@ -630,6 +634,9 @@ impl App {
                 };
                 self.auth_problem = auth;
                 self.next_refresh = Some(now + Duration::from_secs(wait));
+                if std::mem::take(&mut self.refetch_after_in_flight) {
+                    return self.fetch_now();
+                }
                 Vec::new()
             }
             DataEvent::Instances(result) => self.on_instances(result, now),
@@ -689,6 +696,9 @@ impl App {
                 };
                 self.focus = None;
                 if self.view == View::Failures {
+                    if self.refreshing {
+                        self.refetch_after_in_flight = true;
+                    }
                     return self.fetch_now();
                 }
             }
@@ -1497,6 +1507,27 @@ pub(crate) mod tests {
             a.on_key(ch('c'), Instant::now()).is_empty(),
             "c only on request detail"
         );
+    }
+
+    #[test]
+    fn tab_to_failures_during_refresh_refetches_when_done() {
+        let mut a = app();
+        let t0 = Instant::now();
+        a.on_tick(t0);
+        assert_eq!(
+            fetches(&a.on_key(k(KeyCode::Tab), t0)),
+            0,
+            "a refresh is running"
+        );
+        let cmds = a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
+        let views: Vec<View> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                Command::Fetch(DataRequest::Refresh { view, .. }) => Some(*view),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(views, [View::Failures], "refetches for the failures lists");
     }
 
     #[test]

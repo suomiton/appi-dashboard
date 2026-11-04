@@ -528,6 +528,14 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn old_top_lists_say_how_old_they_are() {
+        let (mut app, mono) = demo_app(View::Failures);
+        app.store.tops.as_mut().unwrap().at = wall() - chrono::Duration::hours(2);
+        let out = text(&render(&app, mono, 160, 45));
+        assert!(out.contains("2h old"), "{out}");
+    }
+
+    #[test]
     fn long_names_do_not_panic() {
         let (mut app, mono) = demo_app(View::Failures);
         if let Some(t) = app.store.tops.as_mut() {
