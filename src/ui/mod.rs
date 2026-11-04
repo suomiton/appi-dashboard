@@ -122,6 +122,8 @@ fn header(buf: &mut Buffer, area: Rect, ctx: &Ctx, now: DateTime<FixedOffset>, m
         .as_ref()
         .map(|i| i.name.clone())
         .unwrap_or_else(|| "no instance".into());
+    // Keep the tab bar (and the failures pulse) on screen on narrow terminals.
+    let name = crate::data::format::truncate_width(&name, (area.width / 5).max(12) as usize);
     left.push(ctx.s(format!(" ◆ {name} "), palette::BLUE));
     if let Some(label) = app
         .instance
@@ -614,6 +616,18 @@ pub(crate) mod tests {
             tile.contains(&crate::ui::widgets::bigdigits::big_text("1.5")[0]),
             "{tile}"
         );
+    }
+
+    #[test]
+    fn long_instance_name_keeps_tabs_visible() {
+        let (mut app, mono) = demo_app(View::Overview);
+        app.instance.as_mut().unwrap().name = format!("my-{}-prod", "very-long-name".repeat(4));
+        for w in [80, 100, 110] {
+            let out = text(&render(&app, mono, w, 30));
+            let header = out.lines().next().unwrap();
+            assert!(header.contains("failures ● 12"), "{w}: {header}");
+            assert!(header.contains('…'), "name is shortened: {header}");
+        }
     }
 
     #[test]
