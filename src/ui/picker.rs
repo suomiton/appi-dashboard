@@ -105,6 +105,7 @@ pub fn render(buf: &mut Buffer, area: Rect, ctx: &Ctx, p: &PickerState) {
         inner,
         inner.height - 1,
         &Line::from(vec![
+            ctx.s(" fuzzy ·", palette::DIM),
             ctx.s(" ↑↓", palette::ORANGE),
             ctx.s(" select  ", palette::DIM),
             ctx.s("↵", palette::ORANGE),

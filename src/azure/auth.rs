@@ -230,7 +230,7 @@ pub(crate) fn parse_az_token(json: &str, now: DateTime<Utc>) -> Result<CachedTok
                 .earliest()
                 .map(|t| t.with_timezone(&Utc))
         })
-        .unwrap_or(now + chrono::Duration::minutes(REFRESH_MARGIN_MINUTES));
+        .unwrap_or(now + chrono::Duration::minutes(2 * REFRESH_MARGIN_MINUTES));
 
     Ok(CachedToken {
         access_token,
@@ -300,11 +300,15 @@ mod tests {
         assert_eq!(t.expires_at, expected);
     }
 
-    #[test]
-    fn missing_expiry_means_five_minutes() {
+    #[tokio::test]
+    async fn missing_expiry_means_ten_minutes_and_is_cached() {
         let n = now();
         let t = parse_az_token(r#"{"accessToken":"t"}"#, n).unwrap();
-        assert_eq!(t.expires_at, n + chrono::Duration::minutes(5));
+        assert_eq!(t.expires_at, n + chrono::Duration::minutes(10));
+        let src = AzCliTokenSource::with_program("should-not-run-az");
+        src.cache.lock().unwrap().insert(Audience::Arm, t);
+        assert_eq!(src.token(Audience::Arm).await.unwrap(), "t");
+        assert_eq!(src.token(Audience::Arm).await.unwrap(), "t");
     }
 
     #[test]

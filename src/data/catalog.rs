@@ -80,7 +80,7 @@ pub const AVERAGE_METRICS: &[MetricSpec] = &[
     ),
 ];
 
-/// Count, PT1M, last 10 minutes: feeds the 5-minute alert window.
+/// Count, PT1M, last 5 minutes: feeds the 5-minute alert window.
 pub const ALERT_METRICS: &[MetricSpec] = &[
     spec(SeriesId::RequestsFailed, "requests/failed"),
     spec(SeriesId::ExceptionsServer, "exceptions/server"),

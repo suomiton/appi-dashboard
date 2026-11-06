@@ -128,7 +128,7 @@ fn kpi_tile(buf: &mut Buffer, area: Rect, ctx: &Ctx, k: &Kpi) {
     let inner = PanelBlock::inner(area);
     let (digits, unit) = match k.value {
         Some(v) => fmt_big(v),
-        None => ("-".into(), ""),
+        None => ("—".into(), ""),
     };
     for (i, row) in big_text(&digits).iter().enumerate() {
         put_line(

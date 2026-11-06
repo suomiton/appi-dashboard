@@ -74,7 +74,6 @@ pub fn render(
                 buf,
                 Rect::new(area.x, area.y + area.height - 1, area.width, 1),
                 &ctx,
-                mono,
             );
         }
         return;
@@ -95,7 +94,6 @@ pub fn render(
                 buf,
                 Rect::new(area.x, area.y + area.height - 1, area.width, 1),
                 &ctx,
-                mono,
             );
         }
         return;
@@ -114,13 +112,13 @@ pub fn render(
                 let l = overview_layout(area);
                 header(buf, l.header, &ctx, now, mono);
                 overview::render(buf, &l, &ctx);
-                footer(buf, l.footer, &ctx, mono);
+                footer(buf, l.footer, &ctx);
             }
             View::Failures => {
                 let l = failures_layout(area);
                 header(buf, l.header, &ctx, now, mono);
                 failures::render(buf, &l, &ctx);
-                footer(buf, l.footer, &ctx, mono);
+                footer(buf, l.footer, &ctx);
             }
         }
     }
@@ -263,9 +261,8 @@ fn header(buf: &mut Buffer, area: Rect, ctx: &Ctx, now: DateTime<FixedOffset>, m
     }
 }
 
-fn footer(buf: &mut Buffer, area: Rect, ctx: &Ctx, mono: Instant) {
+fn footer(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
     if let Some((msg, _)) = &ctx.app.toast {
-        let _ = mono;
         put_line(
             buf,
             area,
@@ -298,6 +295,10 @@ pub(crate) const HELP_KEYS: &[(&str, &str)] = &[
     ("Tab / Shift+Tab", "switch view: overview ↔ failures"),
     ("1–9, 0", "select panel by its number"),
     ("arrow keys", "move selection"),
+    ("PgUp / PgDn", "page through drill lists"),
+    ("Home / End", "first / last row in drill lists"),
+    ("picker text", "append; Backspace removes last char"),
+    ("picker editing", "no cursor movement or Ctrl+U / Ctrl+W"),
     ("Enter", "drill in"),
     ("Esc", "back"),
     ("r", "refresh now"),
@@ -340,7 +341,11 @@ fn help(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
 fn auth_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, problem: &AuthError) {
     let box_area = centered(area, 70, 9);
     PanelBlock {
-        title: "Azure CLI sign-in needed",
+        title: match problem {
+            AuthError::NotLoggedIn(_) => "Azure CLI sign-in needed",
+            AuthError::AzNotInstalled => "Azure CLI required",
+            AuthError::Other(_) => "Azure CLI error",
+        },
         hotkey: None,
         right: None,
         emphasis: Emphasis::Alert,
@@ -354,9 +359,13 @@ fn auth_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, problem: &AuthError) {
             "The Azure CLI (az) was not found.".to_string(),
             "Install the Azure CLI: https://aka.ms/azcli".to_string(),
         ),
-        AuthError::NotLoggedIn(msg) | AuthError::Other(msg) => (
+        AuthError::NotLoggedIn(msg) => (
             msg.clone(),
             "Run \"az login\" in another terminal. Retrying automatically.".to_string(),
+        ),
+        AuthError::Other(msg) => (
+            msg.clone(),
+            "The Azure CLI returned an error; retrying automatically.".into(),
         ),
     };
     put_line(
@@ -687,6 +696,41 @@ pub(crate) mod tests {
             tile.contains(&crate::ui::widgets::bigdigits::big_text("1.5")[0]),
             "{tile}"
         );
+    }
+
+    #[test]
+    fn health_response_meters_follow_the_alert_threshold() {
+        let (mut app, mono) = demo_app(View::Failures);
+        app.store
+            .totals
+            .get_mut(&SeriesId::ServerResponse)
+            .unwrap()
+            .value = 1000.0;
+        let panel = failures_layout(Rect::new(0, 0, 160, 45)).health;
+        let inner = PanelBlock::inner(panel);
+        let meter_w = inner.width.saturating_sub(15 + 9 + 1).min(14);
+        let off = Theme::new(Depth::TrueColor).color(palette::METER_OFF);
+        for (threshold, expected) in [(1000.0, meter_w), (2000.0, meter_w / 2)] {
+            app.config.alerts.response_avg_above_ms = threshold;
+            let t = render(&app, mono, 160, 45);
+            let lit = (0..meter_w)
+                .filter(|x| t.backend().buffer()[(inner.x + 15 + x, inner.y + 1)].fg != off)
+                .count();
+            assert_eq!(lit, expected as usize);
+            let memory_row = rect_text(&t, Rect::new(inner.x, inner.y + 4, inner.width, 1));
+            assert!(memory_row.contains("memory free"));
+            assert!(!memory_row.contains('■'));
+        }
+    }
+
+    #[test]
+    fn non_login_cli_error_does_not_suggest_signing_in() {
+        let (mut app, mono) = demo_app(View::Overview);
+        app.auth_problem = Some(AuthError::Other("az timed out".into()));
+        let out = text(&render(&app, mono, 100, 30));
+        assert!(out.contains("Azure CLI error"));
+        assert!(out.contains("retrying automatically"));
+        assert!(!out.contains("az login"));
     }
 
     #[test]

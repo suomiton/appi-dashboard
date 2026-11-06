@@ -285,31 +285,46 @@ pub fn resolve_app(arg: &str, all: &[AppInstance]) -> Resolution {
 }
 
 pub struct App {
-    pub config: Config,
-    pub instance: Option<AppInstance>,
-    pub view: View,
-    pub focus: Option<PanelId>,
-    pub range: TimeRange,
-    pub refresh_secs: u64,
-    pub store: Store,
-    pub alerts: AlertState,
-    pub help: bool,
-    pub auth_problem: Option<AuthError>,
-    pub toast: Option<(String, Instant)>,
-    pub refreshing: bool,
-    pub next_refresh: Option<Instant>,
+    pub(crate) config: Config,
+    pub(crate) instance: Option<AppInstance>,
+    pub(crate) view: View,
+    pub(crate) focus: Option<PanelId>,
+    pub(crate) range: TimeRange,
+    pub(crate) refresh_secs: u64,
+    pub(crate) store: Store,
+    pub(crate) alerts: AlertState,
+    pub(crate) help: bool,
+    pub(crate) auth_problem: Option<AuthError>,
+    /// Notice text and its expiry on the monotonic clock.
+    pub(crate) toast: Option<(String, Instant)>,
+    pub(crate) refreshing: bool,
+    pub(crate) next_refresh: Option<Instant>,
     /// Server-directed cooldown, preserved across refresh controls and selection changes.
     throttled_until: Option<Instant>,
     /// Set when the range or instance changes while a refresh is in flight:
     /// that refresh's result belongs to the old selection and is dropped.
     discard_in_flight: bool,
-    pub picker: Option<PickerState>,
+    pub(crate) picker: Option<PickerState>,
     /// Open drill-down screens, innermost last.
-    pub drill: Vec<DrillFrame>,
+    pub(crate) drill: Vec<DrillFrame>,
     next_frame_id: u64,
 }
 
 impl App {
+    /// Read-only state for consumers outside the state machine's crate.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+    pub fn instance(&self) -> Option<&AppInstance> {
+        self.instance.as_ref()
+    }
+    pub fn view(&self) -> View {
+        self.view
+    }
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
     pub fn new(
         config: Config,
         instance: Option<AppInstance>,
@@ -339,7 +354,11 @@ impl App {
     }
 
     pub fn toast(&mut self, msg: impl Into<String>, now: Instant) {
-        self.toast = Some((msg.into(), now));
+        self.toast_for(msg, now, Duration::from_secs(TOAST_SECS));
+    }
+
+    pub fn toast_for(&mut self, msg: impl Into<String>, now: Instant, duration: Duration) {
+        self.toast = Some((msg.into(), now + duration));
     }
 
     pub fn seconds_to_refresh(&self, now: Instant) -> Option<u64> {
@@ -623,7 +642,7 @@ impl App {
         if self
             .toast
             .as_ref()
-            .is_some_and(|(_, at)| now.duration_since(*at) >= Duration::from_secs(TOAST_SECS))
+            .is_some_and(|(_, expires)| now >= *expires)
         {
             self.toast = None;
         }
@@ -763,13 +782,7 @@ impl App {
             }
             KeyCode::Right | KeyCode::Down => self.move_focus(true),
             KeyCode::Left | KeyCode::Up => self.move_focus(false),
-            KeyCode::Esc => {
-                if self.help {
-                    self.help = false;
-                } else {
-                    self.focus = None;
-                }
-            }
+            KeyCode::Esc => self.focus = None,
             KeyCode::Char('r') => return self.fetch_now(now),
             KeyCode::Char(c @ ('+' | '-')) => {
                 self.refresh_secs = refresh_step(self.refresh_secs, c == '+');
@@ -1787,7 +1800,7 @@ pub(crate) mod tests {
         let mut a = request_app();
         let cmds = a.on_key(ch('o'), Instant::now());
         assert!(
-            matches!(cmds.as_slice(), [Command::OpenUrl(u)] if u.contains("Microsoft_Azure_Monitoring_Logs/LogsBlade") && u.contains("/timespan/PT4H"))
+            matches!(cmds.as_slice(), [Command::OpenUrl(u)] if u.contains("/q/") && u.contains("/timespan/PT4H"))
         );
         a.on_key(k(KeyCode::Esc), Instant::now());
         let cmds = a.on_key(ch('o'), Instant::now());
@@ -1858,6 +1871,17 @@ pub(crate) mod tests {
         a.on_tick(t0 + Duration::from_secs(1), wall());
         assert!(a.toast.is_some());
         a.on_tick(t0 + Duration::from_secs(4), wall());
+        assert!(a.toast.is_none());
+    }
+
+    #[test]
+    fn startup_notice_can_outlast_the_first_refresh() {
+        let mut a = app();
+        let now = Instant::now();
+        a.toast_for("ignoring invalid config.toml", now, Duration::from_secs(30));
+        a.on_tick(now + Duration::from_secs(29), wall());
+        assert!(a.toast.is_some());
+        a.on_tick(now + Duration::from_secs(30), wall());
         assert!(a.toast.is_none());
     }
 }

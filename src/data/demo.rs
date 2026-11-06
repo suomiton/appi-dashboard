@@ -4,11 +4,11 @@
 //! same window always produces the same numbers. All names are made up.
 
 use chrono::{DateTime, Duration, Utc};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::azure::discovery::AppInstance;
 use crate::azure::http::AzError;
-use crate::azure::logs::Table;
+use crate::azure::logs::{Table, table};
 use crate::azure::metrics::{Interval, MetricSeries, MetricsRequest};
 use crate::data::backend::Backend;
 use crate::data::kql;
@@ -32,7 +32,6 @@ pub fn demo_instances() -> Vec<AppInstance> {
             subscription_name: "Demo Subscription".into(),
             tenant_id: ZERO.into(),
             app_id: format!("{i}0000000-0000-0000-0000-000000000000"),
-            location: "westeurope".into(),
         })
         .collect()
 }
@@ -68,7 +67,6 @@ fn step_minutes(interval: Interval, start: DateTime<Utc>, end: DateTime<Utc>) ->
         Interval::PT1M => 1,
         Interval::PT5M => 5,
         Interval::PT15M => 15,
-        Interval::PT30M => 30,
         Interval::Full => (end - start).num_minutes().max(1),
     }
 }
@@ -386,7 +384,6 @@ impl DemoBackend {
                 ])],
             ));
         }
-        let _ = range;
         None
     }
 
@@ -673,16 +670,6 @@ impl DemoBackend {
             rows.push(json!(["GET /api/reports/export", "504", at(k * n / 8), 1]));
         }
         table(&["name", "resultCode", "timestamp", "n"], rows)
-    }
-}
-
-fn table(columns: &[&str], rows: Vec<Value>) -> Table {
-    Table {
-        columns: columns.iter().map(|c| c.to_string()).collect(),
-        rows: rows
-            .into_iter()
-            .map(|r| r.as_array().cloned().unwrap_or_default())
-            .collect(),
     }
 }
 

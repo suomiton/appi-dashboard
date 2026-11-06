@@ -52,6 +52,17 @@ impl Table {
     }
 }
 
+/// Builds a table from column names and JSON-array rows for demo data and fixtures.
+pub(crate) fn table(columns: &[&str], rows: Vec<serde_json::Value>) -> Table {
+    Table {
+        columns: columns.iter().map(|c| c.to_string()).collect(),
+        rows: rows
+            .into_iter()
+            .map(|r| r.as_array().cloned().unwrap_or_default())
+            .collect(),
+    }
+}
+
 #[derive(Deserialize)]
 struct Response {
     #[serde(default)]

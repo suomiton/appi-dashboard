@@ -14,14 +14,13 @@ pub struct AppInstance {
     pub subscription_name: String,
     pub tenant_id: String,
     pub app_id: String,
-    pub location: String,
 }
 
 pub(crate) const DISCOVERY_QUERY: &str = "resources
 | where type =~ 'microsoft.insights/components'
-| project name, id, resourceGroup, subscriptionId, tenantId, location, appId = tostring(properties.AppId)
+| project name, id, resourceGroup, subscriptionId, tenantId, appId = tostring(properties.AppId)
 | join kind=leftouter (resourcecontainers | where type =~ 'microsoft.resources/subscriptions' | project subscriptionId, subscriptionName = name) on subscriptionId
-| project name, id, resourceGroup, subscriptionId, subscriptionName, tenantId, location, appId
+| project name, id, resourceGroup, subscriptionId, subscriptionName, tenantId, appId
 | order by name asc";
 
 const RESOURCE_GRAPH_API_VERSION: &str = "2022-10-01";
@@ -50,8 +49,6 @@ struct GraphRow {
     #[serde(default)]
     tenant_id: Option<String>,
     #[serde(default)]
-    location: Option<String>,
-    #[serde(default)]
     app_id: Option<String>,
 }
 
@@ -66,7 +63,6 @@ impl GraphRow {
             subscription_name: self.subscription_name.unwrap_or_default(),
             tenant_id: self.tenant_id.unwrap_or_default(),
             app_id,
-            location: self.location.unwrap_or_default(),
         })
     }
 }

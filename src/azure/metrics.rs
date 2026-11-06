@@ -35,7 +35,6 @@ pub enum Interval {
     PT1M,
     PT5M,
     PT15M,
-    PT30M,
     Full,
 }
 
@@ -45,7 +44,6 @@ impl Interval {
             Interval::PT1M => "PT1M",
             Interval::PT5M => "PT5M",
             Interval::PT15M => "PT15M",
-            Interval::PT30M => "PT30M",
             Interval::Full => "FULL",
         }
     }

@@ -28,11 +28,15 @@ Try it without Azure: `appi-dashboard --demo`.
 - A terminal with Unicode support. 24-bit color is used when available, with an
   automatic fallback to 256 colors (for example in macOS Terminal.app).
 
+Only the public Azure cloud is supported. Sovereign clouds selected with
+`az cloud set` (such as Azure Government and Azure China) are not supported.
+
 ## Install
 
 Download the archive for your platform from
 [Releases](https://github.com/suomiton/appi-dashboard/releases) (Linux x86_64 and
-arm64, macOS Intel and Apple Silicon, Windows x86_64), or build from source:
+arm64, macOS Intel and Apple Silicon, Windows x86_64), or build from source
+with Rust 1.89 or newer:
 
 ```sh
 cargo install --git https://github.com/suomiton/appi-dashboard
@@ -75,6 +79,8 @@ remembers the last instance you picked.
 | `Tab` / `Shift+Tab` | Switch view: Overview ↔ Failures |
 | `1`–`9`, `0` | Select a panel by its number |
 | arrow keys | Move the selection; switch sub-panels in drill-down screens |
+| `PageUp` / `PageDown` | Page through drill lists |
+| `Home` / `End` | First / last row in drill lists |
 | `Enter` | Drill in |
 | `Esc` | Back |
 | `r` | Refresh now (reload in drill-down screens) |
@@ -90,6 +96,10 @@ remembers the last instance you picked.
 The **Failures** tab label pulses red while failed requests are above the alert
 threshold, so you notice it from the Overview. The app never switches tabs by
 itself.
+
+The instance picker uses fuzzy subsequence matching: `dap` matches
+`demo-app-prod`. Typing appends to the query; Backspace deletes its last character.
+Cursor movement and Ctrl+U / Ctrl+W editing are not supported.
 
 Retained values show their age once stale; stale alert windows stop the red
 pulse. The dashboard refreshes both views together, so switching tabs does
@@ -140,9 +150,10 @@ while preserving comments, formatting and other settings. Unknown top-level or
   log-based definitions. Drill-down screens use log (KQL) queries.
 - Telemetry usually arrives 1–3 minutes after it happens, so "now" is a little
   behind.
-- Azure bills Metrics API calls beyond its monthly free allowance. Each
-  refresh makes a handful of calls; how much that costs is governed by your own
-  Azure budget.
+- Each dashboard refresh makes five Metrics API calls and three log queries.
+  Tokens are cached per audience and renewed near expiry. Drill-downs make
+  additional queries. Azure bills Metrics API calls beyond its monthly free
+  allowance; usage is governed by your own Azure budget.
 - The app is read-only: it never changes anything in Azure.
 
 ## Troubleshooting

@@ -77,7 +77,7 @@ impl AzureHttp {
             .timeout(Duration::from_secs(60))
             .user_agent(concat!("appi-dashboard/", env!("CARGO_PKG_VERSION")))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("static client config");
         Self {
             client,
             tokens,

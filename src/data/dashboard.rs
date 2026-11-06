@@ -147,7 +147,7 @@ pub async fn refresh_dashboard(
     now: DateTime<Utc>,
 ) -> DashboardUpdate {
     let w = window(range, now);
-    let alert_start = w.end - Duration::minutes(10);
+    let alert_start = w.end - Duration::minutes(5);
     let iso = range.iso();
     let scalars_kql = kql::summary_scalars();
     let series_kql = kql::users_sessions_series(range);
@@ -364,7 +364,6 @@ pub(crate) mod tests {
                     Interval::PT1M => 1,
                     Interval::PT5M => 5,
                     Interval::PT15M => 15,
-                    Interval::PT30M => 30,
                     Interval::Full => 0,
                 };
                 Ok(req
@@ -381,10 +380,12 @@ pub(crate) mod tests {
                                     let at = req.start + chrono::Duration::minutes(i * step);
                                     let v = if name == "requests/failed" && step == 1 {
                                         // last five minutes: 2+3+2+3+2 = 12
-                                        [0., 0., 0., 0., 0., 2., 3., 2., 3., 2.]
-                                            .get(i as usize)
-                                            .copied()
-                                            .unwrap_or(0.)
+                                        let remaining = (req.end - at).num_minutes();
+                                        if (1..=5).contains(&remaining) {
+                                            [2., 3., 2., 3., 2.][(5 - remaining) as usize]
+                                        } else {
+                                            0.0
+                                        }
                                     } else {
                                         1.0
                                     };
@@ -466,7 +467,6 @@ pub(crate) mod tests {
                 .any(|c| c.starts_with("metrics:count:PT1M:requests/failed"))
         );
         assert!(calls.iter().any(|c| c.starts_with("query:PT15M:")));
-        let _ = Aggregation::Count;
     }
 
     #[tokio::test]

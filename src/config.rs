@@ -16,13 +16,64 @@ const MAX_RECENT: usize = 10;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedInstance {
     pub name: String,
+    #[serde(deserialize_with = "resource_id")]
     pub resource_id: String,
+    #[serde(deserialize_with = "app_id")]
     pub app_id: String,
     pub tenant_id: String,
     #[serde(default)]
     pub subscription_name: String,
     #[serde(default)]
     pub resource_group: String,
+}
+
+fn is_guid(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn app_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let s = String::deserialize(d)?;
+    if !is_guid(&s) {
+        return Err(serde::de::Error::custom(
+            "app_id must be an Application Insights GUID",
+        ));
+    }
+    Ok(s)
+}
+
+fn resource_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let s = String::deserialize(d)?;
+    let parts: Vec<_> = s.strip_prefix('/').unwrap_or_default().split('/').collect();
+    let safe_name = |name: &str| {
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || "\\?#%".contains(c))
+    };
+    let valid = parts.len() == 8
+        && parts[0].eq_ignore_ascii_case("subscriptions")
+        && is_guid(parts[1])
+        && parts[2].eq_ignore_ascii_case("resourceGroups")
+        && safe_name(parts[3])
+        && parts[4].eq_ignore_ascii_case("providers")
+        && parts[5].eq_ignore_ascii_case("microsoft.insights")
+        && parts[6].eq_ignore_ascii_case("components")
+        && safe_name(parts[7]);
+    if !valid {
+        return Err(serde::de::Error::custom(
+            "resource_id must name an Application Insights component under /subscriptions/<GUID>/resourceGroups/<group>/providers/Microsoft.Insights/components/<app>",
+        ));
+    }
+    Ok(s)
 }
 
 impl From<&AppInstance> for SavedInstance {
@@ -55,7 +106,6 @@ impl SavedInstance {
             subscription_name: self.subscription_name.clone(),
             tenant_id: self.tenant_id.clone(),
             app_id: self.app_id.clone(),
-            location: String::new(),
         }
     }
 }
@@ -284,7 +334,7 @@ mod tests {
         let mut i = demo_instances().remove(0);
         i.name = format!("app-{n}");
         i.resource_id = format!(
-            "/subscriptions/x/resourceGroups/rg/providers/microsoft.insights/components/app-{n}"
+            "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/microsoft.insights/components/app-{n}"
         );
         i
     }
@@ -368,6 +418,49 @@ mod tests {
         let i = inst(1);
         assert_eq!(SavedInstance::from(&i).to_instance().app_id, i.app_id);
         assert_eq!(SavedInstance::from(&i).to_instance().name, i.name);
+    }
+
+    #[test]
+    fn load_rejects_saved_ids_that_could_change_url_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for (field, value) in [
+            ("app_id", "../other-app"),
+            ("app_id", "x?query=bad"),
+            ("resource_id", "https://other.example/resource"),
+            (
+                "resource_id",
+                "/subscriptions/x/resourceGroups/rg/providers/Microsoft.Insights/components/app",
+            ),
+            (
+                "resource_id",
+                "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/../providers/Microsoft.Insights/components/app",
+            ),
+            (
+                "resource_id",
+                "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.Insights/components/app?bad",
+            ),
+            (
+                "resource_id",
+                "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.Insights/components/%2e%2e",
+            ),
+        ] {
+            let mut cfg = Config::default();
+            cfg.remember(&inst(1));
+            let saved = cfg.last_instance.as_mut().unwrap();
+            if field == "app_id" {
+                saved.app_id = value.into();
+            } else {
+                saved.resource_id = value.into();
+            }
+            save(&path, &cfg).unwrap();
+            let (_, warning) = load(&path);
+            assert!(
+                warning.as_ref().is_some_and(|w| w.contains(field)),
+                "{field}={value}: {warning:?}"
+            );
+            assert!(persist(&path, &Config::default()).is_err());
+        }
     }
 
     #[test]

@@ -185,10 +185,7 @@ fn health_panel(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
         .get(&SeriesId::MemoryAvailable)
         .map(|s| &s.value);
     let mem_latest = memory.and_then(|m| m.latest());
-    let mem_ratio = match (mem_latest, memory.and_then(|m| m.max())) {
-        (Some(l), Some(m)) if m > 0.0 => Some(l / m),
-        _ => None,
-    };
+    let response_threshold = app.config.alerts.response_avg_above_ms.max(1.0);
     let dep_5m = app
         .store
         .alert_window
@@ -209,14 +206,14 @@ fn health_panel(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
         ),
         (
             "response avg",
-            avg.map(|v| (v / 2000.0).min(1.0)),
+            avg.map(|v| (v / response_threshold).min(1.0)),
             Gradient::Load,
             avg.map(fmt_ms).unwrap_or_else(|| "—".into()),
             palette::TEXT,
         ),
         (
             "response p95",
-            p95.map(|v| (v / 2000.0).min(1.0)),
+            p95.map(|v| (v / response_threshold).min(1.0)),
             Gradient::Load,
             p95.map(fmt_ms).unwrap_or_else(|| "—".into()),
             palette::YELLOW,
@@ -230,7 +227,7 @@ fn health_panel(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
         ),
         (
             "memory free",
-            mem_ratio,
+            None,
             Gradient::Lime,
             mem_latest.map(fmt_bytes).unwrap_or_else(|| "—".into()),
             palette::TEXT,
@@ -265,9 +262,11 @@ fn health_panel(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
             y,
             &Line::from(ctx.s(format!(" {label}"), palette::SOFT)),
         );
-        if meter_w > 0 {
+        if meter_w > 0
+            && let Some(ratio) = ratio
+        {
             Meter {
-                ratio: ratio.unwrap_or(0.0),
+                ratio,
                 gradient: grad,
                 theme: ctx.theme,
             }

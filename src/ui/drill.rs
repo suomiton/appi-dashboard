@@ -362,12 +362,19 @@ fn endpoint_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, frame: &DrillFrame, 
     if inner.height == 0 {
         return;
     }
+    const TIME_W: usize = 8;
+    const CODE_W: usize = 4;
+    const DURATION_W: usize = 8;
+    const INSTANCE_W: usize = 16;
     put_line(
         buf,
         inner,
         0,
         &Line::from(ctx.s(
-            "  time      code  duration  instance          exception",
+            format!(
+                "  {:<TIME_W$}  {:<CODE_W$}  {:>DURATION_W$}  {:<INSTANCE_W$}  exception",
+                "time", "code", "duration", "instance"
+            ),
             palette::DIM,
         )),
     );
@@ -380,13 +387,22 @@ fn endpoint_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, frame: &DrillFrame, 
         let y = 1 + (i - first) as u16;
         let line = Line::from(vec![
             ctx.s(
-                format!("  {}  ", r.at.with_timezone(&ctx.offset).format("%H:%M:%S")),
+                format!(
+                    "  {:<TIME_W$}  ",
+                    r.at.with_timezone(&ctx.offset).format("%H:%M:%S")
+                ),
                 palette::SOFT,
             ),
-            ctx.s(format!("{:<4}  ", r.code), code_color(&r.code)),
-            ctx.s(format!("{:>8}  ", fmt_ms(r.duration_ms)), palette::TEXT),
             ctx.s(
-                format!("{:<16}  ", truncate_width(&r.instance, 16)),
+                format!("{:<CODE_W$}  ", truncate_width(&r.code, CODE_W)),
+                code_color(&r.code),
+            ),
+            ctx.s(
+                format!("{:>DURATION_W$}  ", fmt_ms(r.duration_ms)),
+                palette::TEXT,
+            ),
+            ctx.s(
+                format!("{:<INSTANCE_W$}  ", truncate_width(&r.instance, INSTANCE_W)),
                 palette::SOFT,
             ),
             ctx.s(
@@ -447,7 +463,10 @@ fn last_flags(nodes: &[TxNode]) -> Vec<bool> {
 fn request_screen(buf: &mut Buffer, area: Rect, ctx: &Ctx, frame: &DrillFrame, r: &RequestData) {
     let frames = r.exception.as_ref().map_or(0, |e| e.frames.len()) as u16;
     let wanted = 2 + 2 + if r.exception.is_some() { 5 + frames } else { 0 };
-    let top_h = wanted.min(area.height * 60 / 100).max(5).min(area.height);
+    let top_h = wanted
+        .min((area.height as u32 * 60 / 100) as u16)
+        .max(5)
+        .min(area.height);
     let top = Rect::new(area.x, area.y, area.width, top_h);
     let bottom = Rect::new(area.x, area.y + top_h, area.width, area.height - top_h);
 

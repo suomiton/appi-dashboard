@@ -100,7 +100,7 @@ dependencies = [
  "crossterm",
  "directories",
  "flate2",
- "futures",
+ "futures-util",
  "httpdate",
  "insta",
  "open",

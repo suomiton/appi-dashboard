@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use chrono::{Local, Utc};
 use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind};
-use futures::{FutureExt, StreamExt};
+use futures_util::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
@@ -267,7 +267,7 @@ fn setup(cli: &Cli) -> Setup {
 pub async fn run(cli: Cli) -> Result<(), String> {
     let mut s = setup(&cli);
     if let Some(w) = s.warning.take() {
-        s.app.toast(w, Instant::now());
+        s.app.toast_for(w, Instant::now(), Duration::from_secs(30));
     }
     let shutdown = Shutdown::new().map_err(|e| format!("could not listen for shutdown: {e}"))?;
     let log = cli
@@ -544,13 +544,13 @@ mod tests {
         assert!(accept_key(&repeat));
     }
 
-    fn cli(args: &[&str]) -> Cli {
+    fn cli(args: &[&str]) -> (Cli, tempfile::TempDir) {
         use clap::Parser;
-        let dir = std::env::temp_dir().join(format!("appi-test-{}", std::process::id()));
-        let cfg = dir.join("config.toml");
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.toml");
         let mut all = vec!["appi-dashboard", "--config", cfg.to_str().unwrap()];
         all.extend_from_slice(args);
-        Cli::try_parse_from(all).unwrap()
+        (Cli::try_parse_from(all).unwrap(), dir)
     }
 
     fn discovers(cmds: &[Command]) -> bool {
@@ -560,7 +560,8 @@ mod tests {
 
     #[test]
     fn app_flag_opens_picker_pending_resolution() {
-        let s = setup(&cli(&["--demo", "--app", "demo-app-staging"]));
+        let (cli, _dir) = cli(&["--demo", "--app", "demo-app-staging"]);
+        let s = setup(&cli);
         assert!(s.app.instance.is_none());
         let p = s.app.picker.as_ref().unwrap();
         assert_eq!(p.pending_app.as_deref(), Some("demo-app-staging"));
@@ -570,7 +571,8 @@ mod tests {
 
     #[test]
     fn demo_without_app_starts_on_first_demo_instance() {
-        let s = setup(&cli(&["--demo"]));
+        let (cli, _dir) = cli(&["--demo"]);
+        let s = setup(&cli);
         assert_eq!(s.app.instance.as_ref().unwrap().name, "demo-app-prod");
         assert!(s.app.picker.is_none());
         assert!(s.initial.is_empty());
@@ -578,7 +580,8 @@ mod tests {
 
     #[test]
     fn no_remembered_instance_opens_picker() {
-        let s = setup(&cli(&[]));
+        let (cli, _dir) = cli(&[]);
+        let s = setup(&cli);
         assert!(s.app.instance.is_none());
         assert!(s.app.picker.is_some());
         assert!(discovers(&s.initial));

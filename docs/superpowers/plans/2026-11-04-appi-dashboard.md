@@ -1218,7 +1218,7 @@ pub fn portal_resource_link(tenant_id: &str, resource_id: &str) -> String;
   - `details` is an array, or a string containing a JSON array. Use the first element that has a non-empty `parsedStack`.
   - Each frame becomes `at {method}  {fileName}:{line}`. Omit `  {fileName}:{line}` when there is no file name, and `:{line}` when the line is 0 or missing.
   - Otherwise fall back to `rawStack`: its first `max` non-empty trimmed lines. Otherwise `[]`.
-- **`portal_logs_link`:** `https://portal.azure.com/#@{tenant}/blade/Microsoft_OperationsManagementSuite_Workspace/Logs.ReactView/resourceId/{pct(resource_id)}/source/LogsBlade.AnalyticsShareLinkToQuery/q/{pct(base64(gzip(kql)))}/timespan/{timespan}`. `pct` percent-encodes every non-alphanumeric byte, including `/`.
+- **`portal_logs_link`:** `https://portal.azure.com/#@{tenant}/blade/Microsoft_Azure_Monitoring_Logs/LogsBlade/resourceId/{pct(resource_id)}/source/LogsBlade.AnalyticsShareLinkToQuery/q/{pct(base64(gzip(kql)))}/timespan/{timespan}`. `pct` percent-encodes every non-alphanumeric byte, including `/`.
 - **`portal_resource_link`:** `https://portal.azure.com/#@{tenant}/resource{resource_id}/overview`.
 - **Keys:**
   - On a request frame, `c` returns `Copy(operation_id)` (toast `copied operation_Id`).

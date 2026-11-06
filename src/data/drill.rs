@@ -353,18 +353,29 @@ pub fn portal_logs_link(tenant_id: &str, resource_id: &str, kql: &str, timespan:
     use base64::Engine;
     use std::io::Write;
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    let _ = gz.write_all(kql.as_bytes());
-    let bytes = gz.finish().unwrap_or_default();
+    gz.write_all(kql.as_bytes())
+        .expect("writing gzip to Vec cannot fail");
+    let bytes = gz.finish().expect("finishing gzip to Vec cannot fail");
     let q = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let tenant = portal_tenant(tenant_id);
     format!(
-        "https://portal.azure.com/#@{tenant_id}/blade/Microsoft_Azure_Monitoring_Logs/LogsBlade/resourceId/{}/source/LogsBlade.AnalyticsShareLinkToQuery/q/{}/timespan/{timespan}",
+        "https://portal.azure.com/#{tenant}/blade/Microsoft_Azure_Monitoring_Logs/LogsBlade/resourceId/{}/source/LogsBlade.AnalyticsShareLinkToQuery/q/{}/timespan/{timespan}",
         pct(resource_id),
         pct(&q)
     )
 }
 
+fn portal_tenant(tenant_id: &str) -> String {
+    if tenant_id.is_empty() {
+        String::new()
+    } else {
+        format!("@{tenant_id}")
+    }
+}
+
 pub fn portal_resource_link(tenant_id: &str, resource_id: &str) -> String {
-    format!("https://portal.azure.com/#@{tenant_id}/resource{resource_id}/overview")
+    let tenant = portal_tenant(tenant_id);
+    format!("https://portal.azure.com/#{tenant}/resource{resource_id}/overview")
 }
 
 fn request_data(row: &Table, exceptions: &Table, tx: &Table) -> RequestData {
@@ -463,7 +474,7 @@ pub async fn load(
     inst: &AppInstance,
     range: TimeRange,
     target: &DrillTarget,
-    _now: DateTime<Utc>,
+    now: DateTime<Utc>,
 ) -> Result<ScreenData, AzError> {
     match target {
         DrillTarget::FailingEndpoints => {
@@ -578,7 +589,7 @@ pub async fn load(
                     Aggregation::Minimum,
                 ),
             };
-            let w = crate::data::time::window(range, _now);
+            let w = crate::data::time::window(range, now);
             let req = |aggregation| MetricsRequest {
                 resource_id: inst.resource_id.clone(),
                 metric_names: vec![name.to_string()],
@@ -692,7 +703,10 @@ fn sort_key_cmp(a: &Cell, b: &Cell) -> std::cmp::Ordering {
         }
     }
     match (a, b) {
-        (Cell::Text(x), Cell::Text(y)) => x.to_lowercase().cmp(&y.to_lowercase()),
+        (Cell::Text(x), Cell::Text(y)) => x
+            .chars()
+            .flat_map(char::to_lowercase)
+            .cmp(y.chars().flat_map(char::to_lowercase)),
         _ => num(b).total_cmp(&num(a)),
     }
 }
@@ -1331,6 +1345,22 @@ pub(crate) mod tests {
         assert_eq!(
             portal_resource_link("tenant-1", rid),
             format!("https://portal.azure.com/#@tenant-1/resource{rid}/overview")
+        );
+    }
+
+    #[test]
+    fn portal_links_allow_an_unspecified_tenant() {
+        let resource =
+            "/subscriptions/x/resourceGroups/rg/providers/Microsoft.Insights/components/app";
+        let link = portal_logs_link("", resource, "requests | take 1", "PT4H");
+        assert!(
+            link.starts_with("https://portal.azure.com/#/blade/"),
+            "{link}"
+        );
+        assert!(!link.contains("#@/"));
+        assert_eq!(
+            portal_resource_link("", resource),
+            format!("https://portal.azure.com/#/resource{resource}/overview")
         );
     }
 

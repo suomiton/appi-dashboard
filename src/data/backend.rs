@@ -144,14 +144,5 @@ pub mod fake {
         }
     }
 
-    /// Builds a `Table` from column names and JSON rows.
-    pub fn table(columns: &[&str], rows: Vec<serde_json::Value>) -> Table {
-        Table {
-            columns: columns.iter().map(|c| c.to_string()).collect(),
-            rows: rows
-                .into_iter()
-                .map(|r| r.as_array().cloned().unwrap_or_default())
-                .collect(),
-        }
-    }
+    pub(crate) use crate::azure::logs::table;
 }

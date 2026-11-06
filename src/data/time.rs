@@ -52,7 +52,6 @@ impl TimeRange {
             Interval::PT1M => 1,
             Interval::PT5M => 5,
             Interval::PT15M => 15,
-            Interval::PT30M => 30,
             Interval::Full => self.minutes(),
         }
     }
