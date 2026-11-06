@@ -8,17 +8,17 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use chrono::{Local, Utc};
 use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::app::{App, Command, DataEvent, DataRequest};
 use crate::azure::auth::AzCliTokenSource;
-use crate::azure::http::{AzureHttp, Endpoints};
+use crate::azure::http::{AzError, AzureHttp, Endpoints};
 use crate::cli::Cli;
 use crate::config::{self, Config};
 use crate::data::backend::{AzureBackend, Backend};
-use crate::data::dashboard::refresh_dashboard;
+use crate::data::dashboard::{ALL_SOURCES, DashboardUpdate, refresh_dashboard};
 use crate::data::demo::{DemoBackend, demo_instances};
 use crate::data::time::{DEFAULT_REFRESH, REFRESH_STEPS, TimeRange};
 use crate::ui::theme::{Theme, detect_depth, resolve_depth};
@@ -35,37 +35,125 @@ pub fn spawn_data_service(
             let backend = backend.clone();
             let tx = tx.clone();
             tokio::spawn(async move {
-                let ev = match req {
-                    DataRequest::Refresh {
-                        instance,
-                        range,
-                        view,
-                    } => DataEvent::Dashboard(
-                        refresh_dashboard(backend.as_ref(), &instance, range, view, Utc::now())
-                            .await,
-                    ),
-                    DataRequest::Discover => DataEvent::Instances(backend.instances().await),
-                    DataRequest::Drill {
-                        frame_id,
-                        instance,
-                        range,
-                        target,
-                    } => DataEvent::Drill {
-                        frame_id,
-                        result: crate::data::drill::load(
-                            backend.as_ref(),
-                            &instance,
-                            range,
-                            &target,
-                            Utc::now(),
-                        )
-                        .await,
-                    },
-                };
+                let ev = answer_request(backend.as_ref(), req, Duration::from_secs(300)).await;
                 let _ = tx.send(ev);
             });
         }
     })
+}
+
+/// Bound the whole request, including authentication and retries. Dropping
+/// timed-out futures cancels their work; panics still produce a completion event.
+async fn answer_request(backend: &dyn Backend, req: DataRequest, limit: Duration) -> DataEvent {
+    let work = async {
+        match &req {
+            DataRequest::Refresh { instance, range } => {
+                DataEvent::Dashboard(refresh_dashboard(backend, instance, *range, Utc::now()).await)
+            }
+            DataRequest::Discover => DataEvent::Instances(backend.instances().await),
+            DataRequest::Drill {
+                frame_id,
+                instance,
+                range,
+                target,
+            } => DataEvent::Drill {
+                frame_id: *frame_id,
+                result: crate::data::drill::load(backend, instance, *range, target, Utc::now())
+                    .await,
+            },
+        }
+    };
+    let failure = match std::panic::AssertUnwindSafe(tokio::time::timeout(limit, work))
+        .catch_unwind()
+        .await
+    {
+        Ok(Ok(ev)) => return ev,
+        Ok(Err(_)) => "timed out",
+        Err(_) => "task panicked",
+    };
+    match req {
+        DataRequest::Refresh { .. } => DataEvent::Dashboard(DashboardUpdate {
+            errors: ALL_SOURCES
+                .into_iter()
+                .map(|s| (s, AzError::Network(format!("refresh {failure}"))))
+                .collect(),
+            ..Default::default()
+        }),
+        DataRequest::Discover => {
+            DataEvent::Instances(Err(AzError::Network(format!("discovery {failure}"))))
+        }
+        DataRequest::Drill { frame_id, .. } => DataEvent::Drill {
+            frame_id,
+            result: Err(AzError::Network(format!("drill {failure}"))),
+        },
+    }
+}
+
+struct Shutdown {
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    hup: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+}
+
+impl Shutdown {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            #[cfg(unix)]
+            term: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+            #[cfg(unix)]
+            hup: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?,
+            #[cfg(unix)]
+            interrupt: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
+        })
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = self.term.recv() => {},
+            _ = self.hup.recv() => {},
+            _ = self.interrupt.recv() => {},
+        }
+        #[cfg(not(unix))]
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Appends error metadata only. Requests, headers and token responses never
+/// reach this writer. JSON escaping keeps multiline messages on one log line.
+fn log_event(out: &mut dyn Write, ev: &DataEvent) -> std::io::Result<()> {
+    let errors: Vec<(String, &AzError)> = match ev {
+        DataEvent::Dashboard(u) => u
+            .errors
+            .iter()
+            .map(|(s, e)| (format!("{s:?}"), e))
+            .collect(),
+        DataEvent::Instances(Err(e)) => vec![("Discovery".into(), e)],
+        DataEvent::Drill {
+            frame_id,
+            result: Err(e),
+        } => vec![(format!("Drill({frame_id})"), e)],
+        _ => Vec::new(),
+    };
+    for (source, error) in errors {
+        let entry = serde_json::json!({"at": Utc::now().to_rfc3339(), "source": source, "error": error.to_string()});
+        writeln!(out, "{entry}")?;
+    }
+    out.flush()
+}
+
+fn open_error_log(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// Windows reports key releases too; only presses and repeats are input.
@@ -181,13 +269,25 @@ pub async fn run(cli: Cli) -> Result<(), String> {
     if let Some(w) = s.warning.take() {
         s.app.toast(w, Instant::now());
     }
+    let shutdown = Shutdown::new().map_err(|e| format!("could not listen for shutdown: {e}"))?;
+    let log = cli
+        .log
+        .as_deref()
+        .map(open_error_log)
+        .transpose()
+        .map_err(|e| format!("could not open error log: {e}"))?;
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, s).await;
+    let result = event_loop(&mut terminal, s, shutdown, log).await;
     ratatui::restore();
     result
 }
 
-async fn event_loop(terminal: &mut ratatui::DefaultTerminal, s: Setup) -> Result<(), String> {
+async fn event_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    s: Setup,
+    mut shutdown: Shutdown,
+    mut log: Option<std::fs::File>,
+) -> Result<(), String> {
     let Setup {
         mut app,
         theme,
@@ -242,6 +342,7 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, s: Setup) -> Result
             dirty = false;
         }
         let cmds = tokio::select! {
+            _ = shutdown.recv() => return Ok(()),
             maybe = events.next() => match maybe {
                 Some(Ok(Event::Key(k))) if accept_key(&k) => {
                     dirty = true;
@@ -257,11 +358,15 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, s: Setup) -> Result
             },
             Some(ev) = ev_rx.recv() => {
                 dirty = true;
+                if let Some(out) = log.as_mut() && let Err(e) = log_event(out, &ev) {
+                    app.toast(format!("could not write error log: {e}"), Instant::now());
+                    log = None;
+                }
                 app.on_data(ev, Instant::now(), Utc::now())
             }
             _ = tick.tick() => {
                 dirty = true;
-                app.on_tick(Instant::now())
+                app.on_tick(Instant::now(), Utc::now())
             }
         };
         pending = cmds;
@@ -271,7 +376,6 @@ async fn event_loop(terminal: &mut ratatui::DefaultTerminal, s: Setup) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::View;
     use crate::data::backend::fake::FakeBackend;
     use crate::data::demo::{DemoBackend, demo_instances};
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -295,7 +399,6 @@ mod tests {
             .send(DataRequest::Refresh {
                 instance: demo_instances().remove(0),
                 range: TimeRange::H1,
-                view: View::Overview,
             })
             .unwrap();
         let ev = tokio::time::timeout(std::time::Duration::from_secs(2), ev_rx.recv())
@@ -319,7 +422,6 @@ mod tests {
             .send(DataRequest::Refresh {
                 instance: demo_instances().remove(0),
                 range: TimeRange::H1,
-                view: View::Overview,
             })
             .unwrap();
         req_tx.send(DataRequest::Discover).unwrap();
@@ -328,6 +430,103 @@ mod tests {
             Some(DataEvent::Instances(Ok(_)))
         ));
         assert!(matches!(ev_rx.recv().await, Some(DataEvent::Dashboard(_))));
+    }
+
+    #[tokio::test]
+    async fn watchdog_turns_timeouts_and_panics_into_dashboard_errors() {
+        let hung = FakeBackend::new().with_query_delay(Duration::from_secs(60));
+        let panicked = FakeBackend::new().with_metrics(|_| panic!("backend bug"));
+        for (backend, message) in [(&hung, "timed out"), (&panicked, "task panicked")] {
+            let ev = answer_request(
+                backend,
+                DataRequest::Refresh {
+                    instance: demo_instances().remove(0),
+                    range: TimeRange::H4,
+                },
+                Duration::from_millis(10),
+            )
+            .await;
+            let DataEvent::Dashboard(u) = ev else {
+                panic!("dashboard completion missing")
+            };
+            assert_eq!(u.errors.len(), ALL_SOURCES.len());
+            assert!(
+                u.errors
+                    .iter()
+                    .all(|(_, e)| e.to_string().contains(message))
+            );
+            let mut app = crate::app::tests::app();
+            let now = Instant::now();
+            app.on_tick(now, Utc::now());
+            app.on_data(DataEvent::Dashboard(u), now, Utc::now());
+            assert!(!app.refreshing);
+            assert_eq!(
+                app.on_tick(now + Duration::from_secs(30), Utc::now()).len(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn watchdog_completes_stalled_drill_requests_too() {
+        let backend = FakeBackend::new().with_query_delay(Duration::from_secs(60));
+        let ev = answer_request(
+            &backend,
+            DataRequest::Drill {
+                frame_id: 42,
+                instance: demo_instances().remove(0),
+                range: TimeRange::H4,
+                target: crate::data::drill::DrillTarget::FailingEndpoints,
+            },
+            Duration::from_millis(10),
+        )
+        .await;
+        assert!(
+            matches!(ev, DataEvent::Drill { frame_id: 42, result: Err(AzError::Network(m)) } if m.contains("timed out"))
+        );
+    }
+
+    #[test]
+    fn error_log_appends_full_messages_with_sources_and_timestamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("errors.jsonl");
+        let message = format!("403: {}\nsecond line", "detailed reason ".repeat(20));
+        let ev = DataEvent::Dashboard(DashboardUpdate {
+            errors: vec![(
+                crate::data::dashboard::Source::Tops,
+                AzError::Network(message.clone()),
+            )],
+            ..Default::default()
+        });
+        log_event(&mut open_error_log(&path).unwrap(), &ev).unwrap();
+        log_event(
+            &mut open_error_log(&path).unwrap(),
+            &DataEvent::Instances(Err(AzError::Network("discovery failed".into()))),
+        )
+        .unwrap();
+        log_event(
+            &mut open_error_log(&path).unwrap(),
+            &DataEvent::Dashboard(DashboardUpdate::default()),
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let rows: Vec<serde_json::Value> = content
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["source"], "Tops");
+        assert_eq!(rows[0]["error"], format!("network: {message}"));
+        assert!(chrono::DateTime::parse_from_rfc3339(rows[0]["at"].as_str().unwrap()).is_ok());
+        assert_eq!(rows[1]["source"], "Discovery");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]

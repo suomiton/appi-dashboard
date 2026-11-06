@@ -7,6 +7,7 @@ use ratatui::widgets::Widget;
 
 use crate::app::{PanelId, hotkey};
 use crate::data::catalog::SeriesId;
+use crate::data::dashboard::Source;
 use crate::data::format::{fmt_bytes, fmt_ms, fmt_num, truncate_width};
 use crate::ui::common::{ChartSpec, Ctx, chart_body, chart_panel, put_line};
 use crate::ui::layout::FailuresLayout;
@@ -20,20 +21,26 @@ const SIDE_WIDTH: u16 = 38;
 fn main_panel(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
     let app = ctx.app;
     let failed = app.store.alert_window.as_ref().map(|w| w.value.failed_5m);
-    let right = match (app.alerts.failures(), failed) {
-        (true, Some(n)) => {
+    let alert_stale = ctx.stale_timed(app.store.alert_window.as_ref());
+    let right = match (alert_stale.is_some(), app.alerts.failures(), failed) {
+        (true, _, Some(n)) => {
+            Line::from(ctx.s(format!("{n:.0} failed · last known"), palette::DIM))
+        }
+        (_, true, Some(n)) => {
             Line::from(ctx.s(format!("▲ {n:.0} failed requests in last 5m"), palette::RED))
         }
-        (false, Some(0.0)) => Line::from(ctx.s("no failures in last 5m", palette::GREEN)),
-        (false, Some(n)) => Line::from(ctx.s(format!("{n:.0} failed in last 5m"), palette::YELLOW)),
-        (_, None) => Line::from(ctx.s("—", palette::DIM)),
+        (_, false, Some(0.0)) => Line::from(ctx.s("no failures in last 5m", palette::GREEN)),
+        (_, false, Some(n)) => {
+            Line::from(ctx.s(format!("{n:.0} failed in last 5m"), palette::YELLOW))
+        }
+        (_, _, None) => Line::from(ctx.s("—", palette::DIM)),
     };
     PanelBlock {
         title: "failures",
         hotkey: hotkey(app.view, PanelId::FailuresMain),
         right: Some(right),
         emphasis: ctx.emphasis(PanelId::FailuresMain),
-        stale: ctx.stale(SeriesId::RequestsFailed),
+        stale: alert_stale.or_else(|| ctx.stale(SeriesId::RequestsFailed)),
         theme: ctx.theme,
     }
     .render(area, buf);
@@ -99,7 +106,10 @@ fn top_lists(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
         Line::from(vec![ctx.s(n, color), ctx.s(name, palette::TEXT)])
     };
     match ctx.app.store.tops.as_ref().map(|t| &t.value) {
-        None => lines.push(Line::from(ctx.s("loading…", palette::DIM))),
+        None => match ctx.app.store.source_errors.get(&Source::Tops) {
+            Some(err) => lines.push(Line::from(ctx.s(format!("⚠ {err}"), palette::RED))),
+            None => lines.push(Line::from(ctx.s("loading…", palette::DIM))),
+        },
         Some(tops) => {
             let age = ctx.app.store.tops.as_ref().map(|t| ctx.now - t.at);
             let limit = chrono::Duration::seconds(ctx.app.refresh_secs as i64 + 60);
@@ -154,7 +164,9 @@ fn health_panel(buf: &mut Buffer, area: Rect, ctx: &Ctx) {
         hotkey: hotkey(app.view, PanelId::Health),
         right: None,
         emphasis: ctx.emphasis(PanelId::Health),
-        stale: None,
+        stale: ctx
+            .stale_timed(app.store.scalars.as_ref())
+            .or_else(|| ctx.stale_timed(app.store.alert_window.as_ref())),
         theme: ctx.theme,
     }
     .render(area, buf);

@@ -184,7 +184,6 @@ pub enum DataRequest {
     Refresh {
         instance: AppInstance,
         range: TimeRange,
-        view: View,
     },
     Discover,
     Drill {
@@ -304,9 +303,6 @@ pub struct App {
     /// Set when the range or instance changes while a refresh is in flight:
     /// that refresh's result belongs to the old selection and is dropped.
     discard_in_flight: bool,
-    /// Set when the user switched to Failures while an Overview refresh was
-    /// running: refetch as soon as it lands so the top lists appear.
-    refetch_after_in_flight: bool,
     pub picker: Option<PickerState>,
     /// Open drill-down screens, innermost last.
     pub drill: Vec<DrillFrame>,
@@ -336,7 +332,6 @@ impl App {
             next_refresh: None,
             throttled_until: None,
             discard_in_flight: false,
-            refetch_after_in_flight: false,
             picker: None,
             drill: Vec::new(),
             next_frame_id: 1,
@@ -369,7 +364,6 @@ impl App {
                 vec![Command::Fetch(DataRequest::Refresh {
                     instance: inst.clone(),
                     range: self.range,
-                    view: self.view,
                 })]
             }
             _ => Vec::new(),
@@ -440,6 +434,9 @@ impl App {
                 }
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if picker.all.is_none() {
+                    return Vec::new();
+                }
                 picker.all = None;
                 return vec![Command::Fetch(DataRequest::Discover)];
             }
@@ -503,6 +500,13 @@ impl App {
     }
 
     fn reload_frame(&mut self) -> Vec<Command> {
+        if self
+            .drill
+            .last()
+            .is_some_and(|f| matches!(f.data, FrameData::Loading))
+        {
+            return Vec::new();
+        }
         let Some(target) = self.drill.last().map(|f| f.target.clone()) else {
             return Vec::new();
         };
@@ -511,6 +515,8 @@ impl App {
                 if let Some(f) = self.drill.last_mut() {
                     f.id = id;
                     f.data = FrameData::Loading;
+                    f.sort = None;
+                    f.selected = [0; 3];
                 }
                 vec![cmd]
             }
@@ -612,7 +618,8 @@ impl App {
         }
     }
 
-    pub fn on_tick(&mut self, now: Instant) -> Vec<Command> {
+    pub fn on_tick(&mut self, now: Instant, wall: DateTime<Utc>) -> Vec<Command> {
+        self.alerts = evaluate(&self.config.alerts, &self.store, wall, self.refresh_secs);
         if self
             .toast
             .as_ref()
@@ -644,9 +651,6 @@ impl App {
                     self.throttled_until = Some(now + wait);
                     self.next_refresh = self.throttled_until;
                 }
-                // Consume both flags even when old-selection data is discarded.
-                // The throttle still applies to requests for the new selection.
-                let refetch = std::mem::take(&mut self.refetch_after_in_flight);
                 if std::mem::take(&mut self.discard_in_flight) {
                     return self.fetch_now(now);
                 }
@@ -655,7 +659,7 @@ impl App {
                     _ => None,
                 });
                 self.store.apply(u, wall);
-                self.alerts = evaluate(&self.config.alerts, &self.store);
+                self.alerts = evaluate(&self.config.alerts, &self.store, wall, self.refresh_secs);
                 let wait = if auth.is_some() {
                     AUTH_RETRY_SECS
                 } else {
@@ -665,9 +669,6 @@ impl App {
                 self.next_refresh = Some(
                     (now + Duration::from_secs(wait)).max(self.throttled_until.unwrap_or(now)),
                 );
-                if refetch {
-                    return self.fetch_now(now);
-                }
                 Vec::new()
             }
             DataEvent::Instances(result) => self.on_instances(result, now),
@@ -685,6 +686,12 @@ impl App {
                         Ok(d) => FrameData::Ready(d),
                         Err(e) => FrameData::Failed(e.to_string()),
                     };
+                    let sub = f.sub;
+                    for i in 0..f.subs() {
+                        f.sub = i;
+                        f.selected[i] = f.selected[i].min(f.rows().saturating_sub(1));
+                    }
+                    f.sub = sub;
                 }
                 Vec::new()
             }
@@ -715,8 +722,20 @@ impl App {
         if self.picker.is_some() {
             return self.on_picker_key(key, now);
         }
-        if self.help && key.code == KeyCode::Esc {
-            self.help = false;
+        if self.auth_problem.is_some() {
+            return match key.code {
+                KeyCode::Char('q') => vec![Command::Quit],
+                KeyCode::Char('r') => self.fetch_now(now),
+                KeyCode::Char('i') => self.open_picker(self.instance.is_some(), None),
+                _ => Vec::new(),
+            };
+        }
+        if self.help {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') => self.help = false,
+                KeyCode::Char('q') => return vec![Command::Quit],
+                _ => {}
+            }
             return Vec::new();
         }
         if !self.drill.is_empty() {
@@ -734,12 +753,6 @@ impl App {
                     View::Failures => View::Overview,
                 };
                 self.focus = None;
-                if self.view == View::Failures {
-                    if self.refreshing {
-                        self.refetch_after_in_flight = true;
-                    }
-                    return self.fetch_now(now);
-                }
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 if let Some(i) = HOTKEYS.iter().position(|h| *h == c)
@@ -891,14 +904,14 @@ pub(crate) mod tests {
     fn tick_starts_one_refresh() {
         let mut a = app();
         let t0 = Instant::now();
-        assert_eq!(fetches(&a.on_tick(t0)), 1);
+        assert_eq!(fetches(&a.on_tick(t0, wall())), 1);
         assert!(a.refreshing);
-        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(5))), 0);
+        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(5), wall())), 0);
         a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
         assert!(!a.refreshing);
-        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(29))), 0);
+        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(29), wall())), 0);
         assert_eq!(a.seconds_to_refresh(t0 + Duration::from_secs(20)), Some(10));
-        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(30))), 1);
+        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(30), wall())), 1);
     }
 
     fn throttled_update(retry_after: Option<Duration>) -> DashboardUpdate {
@@ -913,7 +926,7 @@ pub(crate) mod tests {
         let mut a = app();
         a.refresh_secs = 15;
         let t0 = Instant::now();
-        a.on_tick(t0);
+        a.on_tick(t0, wall());
         let mut u = throttled_update(Some(Duration::from_secs(60)));
         u.errors.push((
             Source::AverageMetrics,
@@ -932,9 +945,9 @@ pub(crate) mod tests {
             a.store.has_data(SeriesId::RequestsFailed),
             "partial data is kept"
         );
-        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(89))), 0);
+        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(89), wall())), 0);
         let ready = t0 + Duration::from_secs(90);
-        assert_eq!(fetches(&a.on_tick(ready)), 1);
+        assert_eq!(fetches(&a.on_tick(ready, wall())), 1);
         assert!(!a.is_throttled(ready));
         a.on_data(DataEvent::Dashboard(good_update()), ready, wall());
         assert_eq!(a.seconds_to_refresh(ready), Some(15));
@@ -945,7 +958,7 @@ pub(crate) mod tests {
         for retry_after in [None, Some(Duration::ZERO), Some(Duration::from_secs(10))] {
             let mut a = app();
             let t0 = Instant::now();
-            a.on_tick(t0);
+            a.on_tick(t0, wall());
             let mut u = throttled_update(retry_after);
             u.errors.push((
                 Source::Scalars,
@@ -954,8 +967,8 @@ pub(crate) mod tests {
             a.on_data(DataEvent::Dashboard(u), t0, wall());
             assert_eq!(a.seconds_to_refresh(t0), Some(30));
             assert!(a.is_throttled(t0));
-            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(29))), 0);
-            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(30))), 1);
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(29), wall())), 0);
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(30), wall())), 1);
         }
     }
 
@@ -968,7 +981,7 @@ pub(crate) mod tests {
         ] {
             let mut a = app();
             let t0 = Instant::now();
-            a.on_tick(t0);
+            a.on_tick(t0, wall());
             for key in keys {
                 assert_eq!(fetches(&a.on_key(key, t0)), 0);
             }
@@ -976,16 +989,15 @@ pub(crate) mod tests {
             let u = throttled_update(Some(Duration::from_secs(60)));
             assert_eq!(fetches(&a.on_data(DataEvent::Dashboard(u), t0, wall())), 0);
             assert_eq!(a.store.has_data(SeriesId::RequestsFailed), !discarded);
-            assert!(!a.refetch_after_in_flight);
             assert!(!a.discard_in_flight);
             assert!(!a.refreshing);
             assert_eq!(a.seconds_to_refresh(t0), Some(60));
-            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59))), 0);
-            let cmds = a.on_tick(t0 + Duration::from_secs(60));
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59), wall())), 0);
+            let cmds = a.on_tick(t0 + Duration::from_secs(60), wall());
             assert!(
                 matches!(cmds.as_slice(), [Command::Fetch(DataRequest::Refresh {
-                range, view, ..
-            })] if *range == a.range && *view == a.view)
+                range, ..
+            })] if *range == a.range)
             );
         }
     }
@@ -995,7 +1007,7 @@ pub(crate) mod tests {
         for key in [ch('r'), ch('t'), ch('-'), ch('+'), k(KeyCode::Tab)] {
             let mut a = app();
             let t0 = Instant::now();
-            a.on_tick(t0);
+            a.on_tick(t0, wall());
             a.on_data(
                 DataEvent::Dashboard(throttled_update(Some(Duration::from_secs(60)))),
                 t0,
@@ -1004,8 +1016,8 @@ pub(crate) mod tests {
             assert_eq!(fetches(&a.on_key(key, t0 + Duration::from_secs(1))), 0);
             let deadline = a.next_refresh.unwrap();
             assert!(deadline >= t0 + Duration::from_secs(60));
-            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59))), 0);
-            assert_eq!(fetches(&a.on_tick(deadline)), 1);
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59), wall())), 0);
+            assert_eq!(fetches(&a.on_tick(deadline, wall())), 1);
         }
     }
 
@@ -1014,7 +1026,7 @@ pub(crate) mod tests {
         for in_flight in [false, true] {
             let mut a = app();
             let t0 = Instant::now();
-            a.on_tick(t0);
+            a.on_tick(t0, wall());
             let u = throttled_update(Some(Duration::from_secs(60)));
             if in_flight {
                 a.select_instance(demo_instances().remove(1), t0);
@@ -1027,8 +1039,8 @@ pub(crate) mod tests {
             }
             assert!(!a.refreshing);
             assert_eq!(a.seconds_to_refresh(t0), Some(60));
-            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59))), 0);
-            let cmds = a.on_tick(t0 + Duration::from_secs(60));
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59), wall())), 0);
+            let cmds = a.on_tick(t0 + Duration::from_secs(60), wall());
             assert!(
                 matches!(cmds.as_slice(), [Command::Fetch(DataRequest::Refresh {
                 instance, ..
@@ -1040,20 +1052,20 @@ pub(crate) mod tests {
     #[test]
     fn no_instance_no_refresh() {
         let mut a = App::new(Config::default(), None, TimeRange::H4, 30);
-        assert!(a.on_tick(Instant::now()).is_empty());
+        assert!(a.on_tick(Instant::now(), wall()).is_empty());
     }
 
     #[test]
     fn failed_refresh_keeps_data() {
         let mut a = app();
         let t0 = Instant::now();
-        a.on_tick(t0);
+        a.on_tick(t0, wall());
         a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
         assert!(a.alerts.failures());
         let mut bad = DashboardUpdate::default();
         bad.errors
             .push((Source::CountMetrics, AzError::Network("down".into())));
-        a.on_tick(t0 + Duration::from_secs(30));
+        a.on_tick(t0 + Duration::from_secs(30), wall());
         a.on_data(
             DataEvent::Dashboard(bad),
             t0 + Duration::from_secs(31),
@@ -1087,7 +1099,7 @@ pub(crate) mod tests {
     fn t_cycles_range_clears_store_and_fetches() {
         let mut a = app();
         let t0 = Instant::now();
-        a.on_tick(t0);
+        a.on_tick(t0, wall());
         a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
         let cmds = a.on_key(ch('t'), t0);
         assert_eq!(a.range, TimeRange::H12);
@@ -1104,7 +1116,7 @@ pub(crate) mod tests {
     fn range_change_discards_in_flight_result() {
         let mut a = app();
         let t0 = Instant::now();
-        a.on_tick(t0);
+        a.on_tick(t0, wall());
         let cmds = a.on_key(ch('t'), t0);
         assert_eq!(fetches(&cmds), 0, "a refresh is already in flight");
         let cmds = a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
@@ -1142,18 +1154,79 @@ pub(crate) mod tests {
         a.on_key(ch('2'), now);
         a.on_key(k(KeyCode::Esc), now);
         assert!(!a.help);
-        assert_eq!(
-            a.focus,
-            Some(PanelId::FailedRequests),
-            "esc closed help only"
+        assert_eq!(a.focus, None, "esc closed help only");
+    }
+
+    #[test]
+    fn help_is_modal_and_quit_still_works() {
+        let mut a = app();
+        let now = Instant::now();
+        a.on_key(ch('?'), now);
+        for key in [
+            ch('2'),
+            ch('t'),
+            ch('+'),
+            ch('i'),
+            ch('r'),
+            k(KeyCode::Tab),
+            k(KeyCode::Enter),
+        ] {
+            assert!(a.on_key(key, now).is_empty());
+        }
+        assert_eq!(a.range, TimeRange::H4);
+        assert_eq!(a.refresh_secs, 30);
+        assert_eq!(a.view, View::Overview);
+        assert!(a.drill.is_empty() && a.picker.is_none());
+        assert!(matches!(a.on_key(ch('q'), now).as_slice(), [Command::Quit]));
+        a.on_key(ch('?'), now);
+        assert!(!a.help);
+    }
+
+    #[test]
+    fn auth_screen_accepts_only_recovery_and_quit_keys() {
+        let mut a = app();
+        let now = Instant::now();
+        a.auth_problem = Some(AuthError::NotLoggedIn("expired".into()));
+        for key in [
+            ch('2'),
+            ch('t'),
+            ch('+'),
+            ch('?'),
+            k(KeyCode::Tab),
+            k(KeyCode::Enter),
+        ] {
+            assert!(a.on_key(key, now).is_empty());
+        }
+        assert_eq!(a.range, TimeRange::H4);
+        assert_eq!(a.refresh_secs, 30);
+        assert_eq!(a.focus, None);
+        assert_eq!(fetches(&a.on_key(ch('r'), now)), 1);
+        assert!(matches!(a.on_key(ch('q'), now).as_slice(), [Command::Quit]));
+        assert!(matches!(
+            a.on_key(ch('i'), now).as_slice(),
+            [Command::Fetch(DataRequest::Discover)]
+        ));
+        assert!(a.picker.is_some());
+    }
+
+    #[test]
+    fn tick_expires_alerts_without_waiting_for_another_result() {
+        let mut a = app();
+        let now = Instant::now();
+        a.on_data(DataEvent::Dashboard(good_update()), now, wall());
+        assert!(a.alerts.failures());
+        a.on_tick(
+            now + Duration::from_secs(121),
+            wall() + chrono::Duration::seconds(121),
         );
+        assert!(!a.alerts.failures());
     }
 
     #[test]
     fn auth_error_sets_auth_problem() {
         let mut a = app();
         let t0 = Instant::now();
-        a.on_tick(t0);
+        a.on_tick(t0, wall());
         let mut u = DashboardUpdate::default();
         u.errors.push((
             Source::Scalars,
@@ -1162,7 +1235,7 @@ pub(crate) mod tests {
         a.on_data(DataEvent::Dashboard(u), t0, wall());
         assert!(matches!(a.auth_problem, Some(AuthError::NotLoggedIn(_))));
         assert_eq!(a.seconds_to_refresh(t0), Some(15));
-        a.on_tick(t0 + Duration::from_secs(15));
+        a.on_tick(t0 + Duration::from_secs(15), wall());
         a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
         assert!(a.auth_problem.is_none());
     }
@@ -1174,7 +1247,7 @@ pub(crate) mod tests {
         a.on_key(k(KeyCode::Tab), t0);
         a.on_key(ch('2'), t0);
         for i in 0..3 {
-            a.on_tick(t0 + Duration::from_secs(i * 30));
+            a.on_tick(t0 + Duration::from_secs(i * 30), wall());
             a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
         }
         assert_eq!(a.view, View::Failures);
@@ -1182,12 +1255,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn switch_to_failures_fetches_when_idle() {
+    fn switching_tabs_never_fetches_when_idle() {
         let mut a = app();
         let t0 = Instant::now();
-        a.on_tick(t0);
+        a.on_tick(t0, wall());
         a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
-        assert_eq!(fetches(&a.on_key(k(KeyCode::Tab), t0)), 1);
+        assert_eq!(fetches(&a.on_key(k(KeyCode::Tab), t0)), 0);
         assert_eq!(
             fetches(&a.on_key(k(KeyCode::Tab), t0)),
             0,
@@ -1345,6 +1418,11 @@ pub(crate) mod tests {
             [Command::Fetch(DataRequest::Discover)]
         ));
         assert!(a.picker.as_ref().unwrap().all.is_none());
+        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(
+            a.on_key(ctrl_r, Instant::now()).is_empty(),
+            "discovery is already running"
+        );
     }
 
     #[test]
@@ -1394,7 +1472,7 @@ pub(crate) mod tests {
     fn switching_instance_discards_in_flight_refresh() {
         let mut a = picker_app(true);
         let t0 = Instant::now();
-        a.on_tick(t0);
+        a.on_tick(t0, wall());
         assert!(a.refreshing);
         a.on_key(ch('s'), t0);
         a.on_key(k(KeyCode::Enter), t0);
@@ -1515,6 +1593,39 @@ pub(crate) mod tests {
         assert_eq!(reqs.len(), 1);
         assert!(matches!(a.drill[0].data, FrameData::Loading));
         assert_ne!(reqs[0].0, id, "reload gets a new frame id");
+        assert!(
+            a.on_key(ch('r'), now).is_empty(),
+            "reload is already running"
+        );
+    }
+
+    #[test]
+    fn reload_resets_sort_and_selection_and_clamps_new_results() {
+        let mut a = drilled();
+        let now = Instant::now();
+        a.on_key(ch('s'), now);
+        a.on_key(k(KeyCode::End), now);
+        assert!(a.drill[0].sort.is_some());
+        let id = drill_requests(&a.on_key(ch('r'), now))[0].0;
+        assert_eq!(a.drill[0].sort, None);
+        assert_eq!(a.drill[0].selected, [0; 3]);
+        // Input received while loading must not leave an out-of-range selection.
+        a.drill[0].selected[0] = 100;
+        let ScreenData::List(mut list) = list_frame() else {
+            panic!()
+        };
+        list.rows.truncate(1);
+        let next = list.rows[0].next.clone().unwrap();
+        a.on_data(
+            DataEvent::Drill {
+                frame_id: id,
+                result: Ok(ScreenData::List(list)),
+            },
+            now,
+            wall(),
+        );
+        assert_eq!(a.drill[0].selected[0], 0);
+        assert_eq!(drill_requests(&a.on_key(k(KeyCode::Enter), now))[0].1, next);
     }
 
     #[test]
@@ -1688,24 +1799,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn tab_to_failures_during_refresh_refetches_when_done() {
+    fn tab_to_failures_during_refresh_does_not_refetch() {
         let mut a = app();
         let t0 = Instant::now();
-        a.on_tick(t0);
-        assert_eq!(
-            fetches(&a.on_key(k(KeyCode::Tab), t0)),
-            0,
-            "a refresh is running"
+        a.on_tick(t0, wall());
+        assert_eq!(fetches(&a.on_key(k(KeyCode::Tab), t0)), 0);
+        assert!(
+            a.on_data(DataEvent::Dashboard(good_update()), t0, wall())
+                .is_empty()
         );
-        let cmds = a.on_data(DataEvent::Dashboard(good_update()), t0, wall());
-        let views: Vec<View> = cmds
-            .iter()
-            .filter_map(|c| match c {
-                Command::Fetch(DataRequest::Refresh { view, .. }) => Some(*view),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(views, [View::Failures], "refetches for the failures lists");
+        assert_eq!(a.view, View::Failures);
+        assert!(!a.refreshing);
     }
 
     pub(crate) fn long_transaction(n: usize, failed_at: usize) -> crate::data::drill::RequestData {
@@ -1751,9 +1855,9 @@ pub(crate) mod tests {
         let mut a = app();
         let t0 = Instant::now();
         a.toast("copied", t0);
-        a.on_tick(t0 + Duration::from_secs(1));
+        a.on_tick(t0 + Duration::from_secs(1), wall());
         assert!(a.toast.is_some());
-        a.on_tick(t0 + Duration::from_secs(4));
+        a.on_tick(t0 + Duration::from_secs(4), wall());
         assert!(a.toast.is_none());
     }
 }

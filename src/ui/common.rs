@@ -25,6 +25,11 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    pub fn stale_timed<T>(&self, value: Option<&crate::data::store::Timed<T>>) -> Option<String> {
+        value
+            .and_then(|v| v.stale_age(self.now, self.app.refresh_secs))
+            .map(fmt_age)
+    }
     pub fn s(&self, text: impl Into<String>, color: Rgb) -> Span<'static> {
         Span::styled(text.into(), self.theme.fg(color))
     }

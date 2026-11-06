@@ -8,7 +8,7 @@ use crate::azure::auth::{Audience, TokenSource};
 use crate::azure::discovery::AppInstance;
 use crate::data::backend::Backend;
 use crate::data::catalog::{AVERAGE_METRICS, COUNT_METRICS};
-use crate::data::dashboard::{Source, View, refresh_dashboard};
+use crate::data::dashboard::{Source, refresh_dashboard};
 use crate::data::drill::{DrillTarget, InstanceMetric, ScreenData, load, row_count};
 use crate::data::time::TimeRange;
 
@@ -100,7 +100,7 @@ pub async fn run_probe(
         }
     };
 
-    let u = refresh_dashboard(backend, inst, range, View::Failures, chrono::Utc::now()).await;
+    let u = refresh_dashboard(backend, inst, range, chrono::Utc::now()).await;
     for (source, e) in &u.errors {
         ok = false;
         writeln!(out, "[FAIL] {}: {e}", source_name(*source))?;

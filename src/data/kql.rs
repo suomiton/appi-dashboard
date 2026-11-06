@@ -43,16 +43,15 @@ pub fn users_sessions_series(range: TimeRange) -> String {
 }
 
 pub fn failure_tops() -> String {
-    "let eps = requests | where timestamp > ago(15m) and tostring(success) == \"False\" | summarize n = sum(itemCount) by name | top 5 by n | extend section = \"endpoint\", detail = \"\";
+    format!("let eps = requests | where timestamp > ago(15m) and {FAILED} | summarize n = sum(itemCount) by name | top 5 by n | extend section = \"endpoint\", detail = \"\";
 let exs = exceptions | where timestamp > ago(15m) and client_Type != \"Browser\" | summarize n = sum(itemCount), detail = take_any(outerMessage) by name = type | top 5 by n | extend section = \"exception\";
-union eps, exs | project section, name, detail, n"
-        .to_string()
+union eps, exs | project section, name, detail, n")
 }
 
 pub fn failing_endpoints(range: TimeRange) -> String {
     let g = range.grain_minutes();
     format!(
-        "requests | where tostring(success) == \"False\"
+        "requests | where {FAILED}
 | summarize n = sum(itemCount) by name, resultCode, bin(timestamp, {g}m)"
     )
 }
@@ -67,14 +66,14 @@ pub fn endpoint_exceptions(name: &str) -> String {
 pub fn endpoint_dependencies(name: &str) -> String {
     let x = kql_string(name);
     format!(
-        "dependencies | where operation_Name == {x} and tostring(success) == \"False\" | summarize n = sum(itemCount) by type, target | top 10 by n"
+        "dependencies | where operation_Name == {x} and {FAILED} | summarize n = sum(itemCount) by type, target | top 10 by n"
     )
 }
 
 pub fn endpoint_recent_failures(name: &str) -> String {
     let x = kql_string(name);
     format!(
-        "requests | where name == {x} and tostring(success) == \"False\"
+        "requests | where name == {x} and {FAILED}
 | top 50 by timestamp desc
 | project timestamp, resultCode, duration, cloud_RoleInstance, operation_Id, id
 | join kind=leftouter (exceptions | where operation_Name == {x} | summarize exType = take_any(type) by operation_Id) on operation_Id
@@ -118,7 +117,7 @@ fn browser_filter(browser: bool) -> &'static str {
     }
 }
 
-const FAILED_AVAILABILITY: &str = "tostring(success) in (\"0\", \"False\", \"false\")";
+const FAILED: &str = "tostring(success) in (\"0\", \"False\", \"false\")";
 
 pub fn exception_types(browser: bool, range: TimeRange) -> String {
     let g = range.grain_minutes();
@@ -140,15 +139,16 @@ pub fn exception_occurrences(browser: bool, exception_type: &str) -> String {
 }
 
 pub fn failing_dependencies() -> String {
-    "dependencies | where tostring(success) == \"False\"
+    format!(
+        "dependencies | where {FAILED}
 | summarize n = sum(itemCount) by type, target, resultCode"
-        .to_string()
+    )
 }
 
 pub fn dependency_calls(dep_type: &str, target: &str) -> String {
     let (t, g) = (kql_string(dep_type), kql_string(target));
     format!(
-        "dependencies | where type == {t} and target == {g} and tostring(success) == \"False\"
+        "dependencies | where type == {t} and target == {g} and {FAILED}
 | top 50 by timestamp desc
 | project timestamp, name, resultCode, duration, operation_Id, operation_Name"
     )
@@ -180,7 +180,7 @@ pub fn slow_pages() -> String {
 pub fn availability_tests() -> String {
     format!(
         "availabilityResults
-| summarize runs = sum(itemCount), failed = sumif(itemCount, {FAILED_AVAILABILITY}) by name, location
+| summarize runs = sum(itemCount), failed = sumif(itemCount, {FAILED}) by name, location
 | extend pct = 100.0 * (runs - failed) / runs
 | order by pct asc"
     )
@@ -189,7 +189,7 @@ pub fn availability_tests() -> String {
 pub fn availability_failures(test: &str, location: &str) -> String {
     let (n, l) = (kql_string(test), kql_string(location));
     format!(
-        "availabilityResults | where name == {n} and location == {l} and {FAILED_AVAILABILITY}
+        "availabilityResults | where name == {n} and location == {l} and {FAILED}
 | top 50 by timestamp desc
 | project timestamp, duration, message"
     )
@@ -252,6 +252,23 @@ mod tests {
         assert!(slow_requests(evil).contains(esc));
         assert!(availability_failures(evil, "l").contains(esc));
         assert!(availability_failures("n", evil).contains(esc));
+    }
+
+    #[test]
+    fn all_failure_queries_accept_false_spellings() {
+        for q in [
+            failure_tops(),
+            failing_endpoints(TimeRange::H4),
+            endpoint_dependencies("x"),
+            endpoint_recent_failures("x"),
+            failing_dependencies(),
+            dependency_calls("t", "g"),
+            availability_tests(),
+            availability_failures("n", "l"),
+        ] {
+            assert!(q.contains(FAILED), "{q}");
+            assert!(!q.contains("== \"False\""));
+        }
     }
 
     #[test]

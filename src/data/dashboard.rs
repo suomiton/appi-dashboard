@@ -144,7 +144,6 @@ pub async fn refresh_dashboard(
     backend: &dyn Backend,
     inst: &AppInstance,
     range: TimeRange,
-    view: View,
     now: DateTime<Utc>,
 ) -> DashboardUpdate {
     let w = window(range, now);
@@ -196,12 +195,7 @@ pub async fn refresh_dashboard(
     ));
     let scalars = backend.query(&inst.app_id, &scalars_kql, iso);
     let users_sessions = backend.query(&inst.app_id, &series_kql, iso);
-    let tops = async {
-        match view {
-            View::Failures => Some(backend.query(&inst.app_id, &tops_kql, "PT15M").await),
-            View::Overview => None,
-        }
-    };
+    let tops = backend.query(&inst.app_id, &tops_kql, "PT15M");
 
     let (count, average, count_totals, average_totals, alert, scalars, users_sessions, tops) = tokio::join!(
         count,
@@ -272,15 +266,10 @@ pub async fn refresh_dashboard(
         Err(e) => u.errors.push((Source::UsersSessions, e)),
     }
     match tops {
-        Some(Ok(t)) => u.tops = Some(parse_tops(&t)),
-        Some(Err(e)) => u.errors.push((Source::Tops, e)),
-        None => {}
+        Ok(t) => u.tops = Some(parse_tops(&t)),
+        Err(e) => u.errors.push((Source::Tops, e)),
     }
-    let attempted: &[Source] = match view {
-        View::Failures => &ALL_SOURCES,
-        View::Overview => &ALL_SOURCES[..7],
-    };
-    u.succeeded = attempted
+    u.succeeded = ALL_SOURCES
         .iter()
         .copied()
         .filter(|s| !u.errors.iter().any(|(e, _)| e == s))
@@ -450,7 +439,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn refresh_collects_all_sources() {
         let b = fixture_backend();
-        let u = refresh_dashboard(&b, &demo_instance(), TimeRange::H4, View::Failures, now()).await;
+        let u = refresh_dashboard(&b, &demo_instance(), TimeRange::H4, now()).await;
         assert!(u.errors.is_empty(), "{:?}", u.errors);
         assert_eq!(u.succeeded.len(), 8, "every source reports success");
         assert_eq!(u.series[&SeriesId::RequestsFailed].points.len(), 48);
@@ -481,11 +470,11 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn overview_skips_tops() {
+    async fn every_refresh_fetches_tops() {
         let b = fixture_backend();
-        let u = refresh_dashboard(&b, &demo_instance(), TimeRange::H4, View::Overview, now()).await;
-        assert!(u.tops.is_none());
-        assert!(!b.calls().iter().any(|c| c.contains("let eps")));
+        let u = refresh_dashboard(&b, &demo_instance(), TimeRange::H4, now()).await;
+        assert!(u.tops.is_some());
+        assert!(b.calls().iter().any(|c| c.contains("let eps")));
     }
 
     #[tokio::test]
@@ -504,7 +493,7 @@ pub(crate) mod tests {
                 }])
             }
         });
-        let u = refresh_dashboard(&b, &demo_instance(), TimeRange::H4, View::Overview, now()).await;
+        let u = refresh_dashboard(&b, &demo_instance(), TimeRange::H4, now()).await;
         assert!(u.errors.iter().any(|(s, _)| *s == Source::AverageMetrics));
         assert!(u.errors.iter().any(|(s, _)| *s == Source::AverageTotals));
         assert!(u.series.contains_key(&SeriesId::RequestsFailed));

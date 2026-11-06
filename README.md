@@ -65,6 +65,7 @@ remembers the last instance you picked.
 | `--refresh 15\|30\|60\|120\|300` | Refresh interval in seconds (default 30). |
 | `--color auto\|truecolor\|256` | Color depth (default auto). |
 | `--config <path>` | Use a different config file. |
+| `--log <path>` | Append full Azure errors with timestamps and source names to a JSON-lines file. |
 | `--demo` | Made-up data; nothing is read from or saved to Azure or your config. |
 
 ## Keys
@@ -89,6 +90,14 @@ remembers the last instance you picked.
 The **Failures** tab label pulses red while failed requests are above the alert
 threshold, so you notice it from the Overview. The app never switches tabs by
 itself.
+
+Retained values show their age once stale; stale alert windows stop the red
+pulse. The dashboard refreshes both views together, so switching tabs does
+not send extra requests. Azure throttle delays also apply to manual refreshes.
+
+Use `--log errors.jsonl` to keep transient errors beyond the header's abbreviated
+message. Logging is opt-in and appends to the file. Request headers and token
+responses are never logged.
 
 ## Configuration
 
@@ -120,6 +129,9 @@ response_avg_above_ms = 1000.0
 ```
 
 Command-line flags override the file for that run only.
+When saving, the app updates the refresh interval, range and remembered instances
+while preserving comments, formatting and other settings. Unknown top-level or
+`[alerts]` keys produce a startup warning so misspellings are visible.
 
 ## About the data
 

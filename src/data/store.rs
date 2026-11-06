@@ -16,6 +16,13 @@ pub struct Timed<T> {
     pub at: DateTime<Utc>,
 }
 
+impl<T> Timed<T> {
+    pub fn stale_age(&self, now: DateTime<Utc>, refresh_secs: u64) -> Option<Duration> {
+        let age = now - self.at;
+        (age > Duration::seconds(2 * refresh_secs as i64 + 60)).then_some(age)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Store {
     pub series: HashMap<SeriesId, Timed<Series>>,
@@ -193,7 +200,7 @@ mod tests {
             Source::CountTotals,
         ];
         s.apply(u, t0());
-        assert!(evaluate(&AlertConfig::default(), &s).is(AlertKind::Response));
+        assert!(evaluate(&AlertConfig::default(), &s, t0(), 30).is(AlertKind::Response));
 
         // Two hours later the averages succeed but carry no samples (app down),
         // and the count totals call fails.
@@ -208,7 +215,7 @@ mod tests {
         s.apply(later, t2);
         assert_eq!(s.total(SeriesId::ServerResponse), None);
         assert!(!s.has_data(SeriesId::ServerResponse));
-        assert!(!evaluate(&AlertConfig::default(), &s).is(AlertKind::Response));
+        assert!(!evaluate(&AlertConfig::default(), &s, t0(), 30).is(AlertKind::Response));
         assert_eq!(
             s.total(SeriesId::RequestsFailed),
             Some(3.0),

@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::data::catalog::SeriesId;
@@ -52,9 +53,18 @@ impl AlertState {
     }
 }
 
-pub fn evaluate(cfg: &AlertConfig, store: &Store) -> AlertState {
+pub fn evaluate(
+    cfg: &AlertConfig,
+    store: &Store,
+    now: DateTime<Utc>,
+    refresh_secs: u64,
+) -> AlertState {
     let mut active = HashSet::new();
-    if let Some(w) = &store.alert_window {
+    if let Some(w) = store
+        .alert_window
+        .as_ref()
+        .filter(|w| w.stale_age(now, refresh_secs).is_none())
+    {
         let w = &w.value;
         if w.failed_5m >= cfg.failed_requests_5m {
             active.insert(AlertKind::Failures);
@@ -66,13 +76,19 @@ pub fn evaluate(cfg: &AlertConfig, store: &Store) -> AlertState {
         }
     }
     if store
-        .total(SeriesId::Availability)
+        .totals
+        .get(&SeriesId::Availability)
+        .filter(|v| v.stale_age(now, refresh_secs).is_none())
+        .map(|v| v.value)
         .is_some_and(|a| a < cfg.availability_below_pct)
     {
         active.insert(AlertKind::Availability);
     }
     if store
-        .total(SeriesId::ServerResponse)
+        .totals
+        .get(&SeriesId::ServerResponse)
+        .filter(|v| v.stale_age(now, refresh_secs).is_none())
+        .map(|v| v.value)
         .is_some_and(|r| r > cfg.response_avg_above_ms)
     {
         active.insert(AlertKind::Response);
@@ -86,6 +102,10 @@ mod tests {
     use crate::data::dashboard::{AlertWindow, DashboardUpdate};
     use chrono::{TimeZone, Utc};
 
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 11, 4, 13, 0, 0).unwrap()
+    }
+
     fn store_with(failed_5m: f64, availability: Option<f64>) -> Store {
         let mut u = DashboardUpdate {
             alert_window: Some(AlertWindow {
@@ -98,23 +118,55 @@ mod tests {
             u.totals.insert(SeriesId::Availability, a);
         }
         let mut s = Store::default();
-        s.apply(u, Utc.with_ymd_and_hms(2026, 11, 4, 13, 0, 0).unwrap());
+        s.apply(u, now());
         s
     }
 
     #[test]
     fn failure_threshold() {
         let cfg = AlertConfig::default();
-        assert!(evaluate(&cfg, &store_with(5.0, None)).failures());
-        assert!(!evaluate(&cfg, &store_with(4.0, None)).failures());
+        assert!(evaluate(&cfg, &store_with(5.0, None), now(), 30).failures());
+        assert!(!evaluate(&cfg, &store_with(4.0, None), now(), 30).failures());
     }
 
     #[test]
     fn availability_threshold() {
         let cfg = AlertConfig::default();
-        assert!(evaluate(&cfg, &store_with(0.0, Some(98.5))).is(AlertKind::Availability));
-        assert!(!evaluate(&cfg, &store_with(0.0, Some(100.0))).is(AlertKind::Availability));
-        assert!(!evaluate(&cfg, &store_with(0.0, None)).is(AlertKind::Availability));
+        assert!(
+            evaluate(&cfg, &store_with(0.0, Some(98.5)), now(), 30).is(AlertKind::Availability)
+        );
+        assert!(
+            !evaluate(&cfg, &store_with(0.0, Some(100.0)), now(), 30).is(AlertKind::Availability)
+        );
+        assert!(!evaluate(&cfg, &store_with(0.0, None), now(), 30).is(AlertKind::Availability));
+    }
+
+    #[test]
+    fn alerts_expire_using_their_own_sources() {
+        let cfg = AlertConfig::default();
+        let mut store = store_with(12.0, Some(98.5));
+        store.totals.insert(
+            SeriesId::ServerResponse,
+            crate::data::store::Timed {
+                value: 1500.0,
+                at: now(),
+            },
+        );
+        let later = now() + chrono::Duration::seconds(121);
+        store.series.insert(
+            SeriesId::RequestsFailed,
+            crate::data::store::Timed {
+                value: crate::data::dashboard::Series::default(),
+                at: later,
+            },
+        );
+        assert!(evaluate(&cfg, &store, now() + chrono::Duration::seconds(120), 30).failures());
+        let alerts = evaluate(&cfg, &store, later, 30);
+        assert!(!alerts.failures());
+        assert!(!alerts.is(AlertKind::Availability));
+        assert!(!alerts.is(AlertKind::Response));
+        store.alert_window.as_mut().unwrap().at = later;
+        assert!(evaluate(&cfg, &store, later, 30).failures());
     }
 
     #[test]
@@ -132,6 +184,6 @@ mod tests {
             (c.availability_below_pct, c.response_avg_above_ms),
             (99.0, 1000.0)
         );
-        assert!(!evaluate(&c, &Store::default()).failures());
+        assert!(!evaluate(&c, &Store::default(), now(), 30).failures());
     }
 }

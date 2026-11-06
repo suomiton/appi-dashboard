@@ -128,7 +128,18 @@ pub fn default_path() -> Option<PathBuf> {
 pub fn load(path: &Path) -> (Config, Option<String>) {
     match std::fs::read_to_string(path) {
         Ok(text) => match toml::from_str::<Config>(&text) {
-            Ok(c) => (c, None),
+            Ok(c) => {
+                let warning = unknown_keys(&text)
+                    .filter(|keys| !keys.is_empty())
+                    .map(|keys| {
+                        format!(
+                            "unknown settings in {}: {}",
+                            path.display(),
+                            keys.join(", ")
+                        )
+                    });
+                (c, warning)
+            }
             Err(e) => (
                 Config::default(),
                 Some(format!("ignoring invalid {}: {e}", path.display())),
@@ -142,20 +153,51 @@ pub fn load(path: &Path) -> (Config, Option<String>) {
     }
 }
 
+fn unknown_keys(text: &str) -> Option<Vec<String>> {
+    let table: toml::Table = toml::from_str(text).ok()?;
+    let known = [
+        "refresh_secs",
+        "range",
+        "color",
+        "last_instance",
+        "recent",
+        "alerts",
+        "labels",
+    ];
+    let mut keys: Vec<String> = table
+        .keys()
+        .filter(|k| !known.contains(&k.as_str()))
+        .cloned()
+        .collect();
+    if let Some(alerts) = table.get("alerts").and_then(|v| v.as_table()) {
+        let known = [
+            "failed_requests_5m",
+            "server_exceptions_5m",
+            "dependency_failures_5m",
+            "availability_below_pct",
+            "response_avg_above_ms",
+        ];
+        keys.extend(
+            alerts
+                .keys()
+                .filter(|k| !known.contains(&k.as_str()))
+                .map(|k| format!("alerts.{k}")),
+        );
+    }
+    keys.sort();
+    Some(keys)
+}
+
 /// Saves the settings the app itself manages (refresh interval, range and
 /// remembered instances) into the file as it is on disk now, so labels,
 /// alert thresholds and other hand edits survive. Refuses to write when the
 /// file exists but cannot be read or parsed, rather than replacing it.
 pub fn persist(path: &Path, app: &Config) -> Result<(), String> {
-    let mut merged = match std::fs::read_to_string(path) {
-        Ok(text) => toml::from_str::<Config>(&text).map_err(|e| {
-            format!(
-                "not saving settings: {} has errors ({})",
-                path.display(),
-                e.message()
-            )
-        })?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => app.clone(),
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return save(path, app).map_err(|e| format!("could not save {}: {e}", path.display()));
+        }
         Err(e) => {
             return Err(format!(
                 "not saving settings: cannot read {}: {e}",
@@ -163,11 +205,31 @@ pub fn persist(path: &Path, app: &Config) -> Result<(), String> {
             ));
         }
     };
-    merged.refresh_secs = app.refresh_secs;
-    merged.range = app.range;
-    merged.last_instance = app.last_instance.clone();
-    merged.recent = app.recent.clone();
-    save(path, &merged).map_err(|e| format!("could not save {}: {e}", path.display()))
+    let invalid = |e| format!("not saving settings: {} has errors ({e})", path.display());
+    toml::from_str::<Config>(&text).map_err(|e| invalid(e.to_string()))?;
+    let mut doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| invalid(e.to_string()))?;
+    let mut updates = toml::to_string_pretty(app)
+        .map_err(|e| invalid(e.to_string()))?
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| invalid(e.to_string()))?;
+    for key in ["refresh_secs", "range", "last_instance", "recent"] {
+        let Some(mut replacement) = updates.remove(key) else {
+            doc.remove(key);
+            continue;
+        };
+        // Keep comments attached to scalar settings, including inline comments.
+        if let (Some(old), Some(new)) = (
+            doc.get(key).and_then(|v| v.as_value()),
+            replacement.as_value_mut(),
+        ) {
+            *new.decor_mut() = old.decor().clone();
+        }
+        doc[key] = replacement;
+    }
+    write_atomic(path, &doc.to_string())
+        .map_err(|e| format!("could not save {}: {e}", path.display()))
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -176,9 +238,13 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// synced and then renamed over the target, so readers (including other
 /// running copies) never see a half-written file.
 pub fn save(path: &Path, cfg: &Config) -> std::io::Result<()> {
+    let text = toml::to_string_pretty(cfg).map_err(std::io::Error::other)?;
+    write_atomic(path, &text)
+}
+
+fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir)?;
-    let text = toml::to_string_pretty(cfg).map_err(std::io::Error::other)?;
     let file_name = path
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
@@ -367,6 +433,36 @@ mod tests {
             Some("PROD"),
             "labels kept"
         );
+    }
+
+    #[test]
+    fn persist_preserves_comments_formatting_and_unknown_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let text = "# My dashboard\nrefresh_secs = 30 # polling\nrange = '4h' # history\ncolor = '256'\nrefresh_sec = 120 # typo\n\n[alerts] # custom thresholds\nfailed_requests_5m = 2 # noisy app\nunknown_threshold = 9\n\n[plugin]\ncustom = 'leave me' # extension\n";
+        std::fs::write(&p, text).unwrap();
+        let (mut cfg, warning) = load(&p);
+        let warning = warning.unwrap();
+        for key in ["refresh_sec", "alerts.unknown_threshold", "plugin"] {
+            assert!(warning.contains(key));
+        }
+        cfg.refresh_secs = 60;
+        cfg.range = TimeRange::H12;
+        cfg.remember(&inst(1));
+        persist(&p, &cfg).unwrap();
+        let saved = std::fs::read_to_string(&p).unwrap();
+        assert!(saved.contains("refresh_secs = 60 # polling"), "{saved}");
+        assert!(saved.contains("# history"));
+        assert!(saved.starts_with("# My dashboard\n"));
+        assert!(saved.contains("color = '256'"));
+        assert!(saved.contains("refresh_sec = 120 # typo"));
+        assert!(saved.contains("[alerts] # custom thresholds\nfailed_requests_5m = 2 # noisy app\nunknown_threshold = 9"));
+        assert!(saved.contains("[plugin]\ncustom = 'leave me' # extension"));
+        let (back, _) = load(&p);
+        assert_eq!(back.refresh_secs, 60);
+        assert_eq!(back.range, TimeRange::H12);
+        assert_eq!(back.last_instance.unwrap().name, "app-1");
+        assert_eq!(back.alerts.failed_requests_5m, 2.0);
     }
 
     #[test]

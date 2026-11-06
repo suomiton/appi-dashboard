@@ -19,6 +19,7 @@ struct Kpi {
     label: String,
     color: Rgb,
     alert: bool,
+    stale: Option<String>,
 }
 
 fn kpis(ctx: &Ctx) -> Vec<Kpi> {
@@ -31,6 +32,7 @@ fn kpis(ctx: &Ctx) -> Vec<Kpi> {
     vec![
         Kpi {
             title: "users",
+            stale: ctx.stale_timed(app.store.scalars.as_ref()),
             value: scalars.and_then(|s| s.users_5m),
             label: "active · 5m".into(),
             color: palette::CYAN,
@@ -38,6 +40,7 @@ fn kpis(ctx: &Ctx) -> Vec<Kpi> {
         },
         Kpi {
             title: "sessions",
+            stale: ctx.stale_timed(app.store.scalars.as_ref()),
             value: scalars.and_then(|s| s.sessions_range),
             label: format!("unique · {range}"),
             color: palette::CYAN,
@@ -45,6 +48,7 @@ fn kpis(ctx: &Ctx) -> Vec<Kpi> {
         },
         Kpi {
             title: "requests",
+            stale: ctx.stale_timed(app.store.totals.get(&SeriesId::RequestsCount)),
             value: ctx
                 .total(SeriesId::RequestsCount)
                 .map(|n| n / app.range.minutes() as f64),
@@ -54,6 +58,7 @@ fn kpis(ctx: &Ctx) -> Vec<Kpi> {
         },
         Kpi {
             title: "failed",
+            stale: ctx.stale_timed(app.store.alert_window.as_ref()),
             value: failed,
             label: if alerting { "▲ last 5m" } else { "last 5m" }.into(),
             color: if alerting {
@@ -67,6 +72,7 @@ fn kpis(ctx: &Ctx) -> Vec<Kpi> {
         },
         Kpi {
             title: "exceptions",
+            stale: ctx.stale_timed(app.store.totals.get(&SeriesId::ExceptionsServer)),
             value: ctx.total(SeriesId::ExceptionsServer),
             label: format!("server · {range}"),
             color: palette::PURPLE,
@@ -74,6 +80,7 @@ fn kpis(ctx: &Ctx) -> Vec<Kpi> {
         },
         Kpi {
             title: "response",
+            stale: ctx.stale_timed(app.store.totals.get(&SeriesId::ServerResponse)),
             // Seconds once it reaches 1 s, so the tile never reads "1.5 k ms".
             value: ctx
                 .total(SeriesId::ServerResponse)
@@ -91,6 +98,7 @@ fn kpis(ctx: &Ctx) -> Vec<Kpi> {
         },
         Kpi {
             title: "availability",
+            stale: ctx.stale_timed(app.store.totals.get(&SeriesId::Availability)),
             value: availability,
             label: if availability.is_some() {
                 format!("% · {range}")
@@ -113,7 +121,7 @@ fn kpi_tile(buf: &mut Buffer, area: Rect, ctx: &Ctx, k: &Kpi) {
         } else {
             Emphasis::Normal
         },
-        stale: None,
+        stale: k.stale.clone(),
         theme: ctx.theme,
     }
     .render(area, buf);
@@ -127,7 +135,14 @@ fn kpi_tile(buf: &mut Buffer, area: Rect, ctx: &Ctx, k: &Kpi) {
             buf,
             inner,
             i as u16,
-            &Line::from(ctx.s(row.clone(), k.color)),
+            &Line::from(ctx.s(
+                row.clone(),
+                if k.stale.is_some() {
+                    palette::DIM
+                } else {
+                    k.color
+                },
+            )),
         );
     }
     let label = if unit.is_empty() {
@@ -162,7 +177,17 @@ fn kpi_strip(buf: &mut Buffer, area: Rect, ctx: &Ctx, all: &[Kpi]) {
             ("availability", Some(v)) => format!("{}%", fmt_num(v)),
             (_, Some(v)) => fmt_num(v),
         };
-        spans.push(ctx.s(v, k.color));
+        spans.push(ctx.s(
+            v,
+            if k.stale.is_some() {
+                palette::DIM
+            } else {
+                k.color
+            },
+        ));
+        if let Some(age) = &k.stale {
+            spans.push(ctx.s(format!(" stale {age}"), palette::YELLOW));
+        }
     }
     put_line(buf, area, 0, &Line::from(spans));
 }

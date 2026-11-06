@@ -173,6 +173,11 @@ impl AzureHttp {
                 invalidated = true;
                 continue;
             }
+            if status == StatusCode::UNAUTHORIZED {
+                return Err(AzError::Auth(AuthError::NotLoggedIn(azure_error_message(
+                    &text,
+                ))));
+            }
             if status.is_server_error() && !last {
                 tokio::time::sleep(self.retry.backoff(attempt)).await;
                 continue;
@@ -451,6 +456,29 @@ mod tests {
             .get_json(Audience::Arm, url(&server, "/x"))
             .await;
         assert!(r.is_ok());
+        assert_eq!(tokens.invalidations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn repeated_401_requires_sign_in_after_one_token_refresh() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_string(r#"{"error":{"message":"session revoked"}}"#),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        let tokens = Arc::new(CountingTokens {
+            invalidations: AtomicUsize::new(0),
+        });
+        let r: Result<Ok_, _> = client(tokens.clone())
+            .get_json(Audience::Arm, url(&server, "/x"))
+            .await;
+        assert!(
+            matches!(r, Err(AzError::Auth(AuthError::NotLoggedIn(m))) if m == "session revoked")
+        );
         assert_eq!(tokens.invalidations.load(Ordering::SeqCst), 1);
     }
 

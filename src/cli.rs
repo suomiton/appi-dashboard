@@ -24,6 +24,9 @@ pub struct Cli {
     /// Config file path (default: the per-user config directory)
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Append timestamped Azure errors to this JSON-lines file
+    #[arg(long)]
+    pub log: Option<PathBuf>,
     /// Show made-up demo data instead of querying Azure
     #[arg(long)]
     pub demo: bool,
@@ -80,6 +83,8 @@ mod tests {
             "--demo",
             "--color",
             "256",
+            "--log",
+            "errors.jsonl",
         ])
         .unwrap();
         assert_eq!(c.range, Some(TimeRange::H12));
@@ -87,6 +92,7 @@ mod tests {
         assert_eq!(c.app.as_deref(), Some("demo-app-prod"));
         assert!(c.demo);
         assert_eq!(c.color, Some(ColorMode::Ansi256));
+        assert_eq!(c.log, Some(PathBuf::from("errors.jsonl")));
         assert!(c.command.is_none());
     }
 

@@ -66,6 +66,17 @@ pub fn render(
         let rows = Rect::new(area.x, area.y, area.width, 1);
         header(buf, rows, &ctx, now, mono);
         auth_screen(buf, area, &ctx, problem);
+        if let Some(p) = &app.picker {
+            picker::render(buf, area, &ctx, p);
+        }
+        if app.toast.is_some() {
+            footer(
+                buf,
+                Rect::new(area.x, area.y + area.height - 1, area.width, 1),
+                &ctx,
+                mono,
+            );
+        }
         return;
     }
     if app.instance.is_none() {
@@ -78,6 +89,14 @@ pub fn render(
         );
         if let Some(p) = &app.picker {
             picker::render(buf, area, &ctx, p);
+        }
+        if app.toast.is_some() {
+            footer(
+                buf,
+                Rect::new(area.x, area.y + area.height - 1, area.width, 1),
+                &ctx,
+                mono,
+            );
         }
         return;
     }
@@ -177,7 +196,9 @@ fn header(buf: &mut Buffer, area: Rect, ctx: &Ctx, now: DateTime<FixedOffset>, m
         .as_ref()
         .map(|w| w.value.failed_5m)
         .unwrap_or(0.0);
-    let label = if alerting {
+    let label = if let Some(age) = ctx.stale_timed(app.store.alert_window.as_ref()) {
+        format!(" failures · stale {age} ")
+    } else if alerting {
         format!(" failures ● {failed:.0} ")
     } else {
         " failures ".to_string()
@@ -196,7 +217,11 @@ fn header(buf: &mut Buffer, area: Rect, ctx: &Ctx, now: DateTime<FixedOffset>, m
     }
     if let Some(s) = app.store.scalars.as_ref().and_then(|s| s.value.servers_10m) {
         left.push(sep());
-        left.push(ctx.s(format!("● {s:.0} servers"), palette::GREEN));
+        if let Some(age) = ctx.stale_timed(app.store.scalars.as_ref()) {
+            left.push(ctx.s(format!("● {s:.0} servers · stale {age}"), palette::DIM));
+        } else {
+            left.push(ctx.s(format!("● {s:.0} servers"), palette::GREEN));
+        }
     }
 
     let mut right: Vec<Span> = Vec::new();
@@ -386,10 +411,9 @@ pub(crate) mod tests {
             &DemoBackend::at(wall()),
             &inst,
             TimeRange::H4,
-            View::Failures,
             wall(),
         ));
-        app.on_tick(mono);
+        app.on_tick(mono, wall());
         app.on_data(DataEvent::Dashboard(u), mono, wall());
         app.view = view;
         (app, mono)
@@ -513,7 +537,7 @@ pub(crate) mod tests {
         let inst = demo_instances().remove(0);
         let mut app = App::new(Config::default(), Some(inst), TimeRange::H4, 30);
         let mono = Instant::now();
-        app.on_tick(mono);
+        app.on_tick(mono, wall());
         let mut u = DashboardUpdate::default();
         for src in [
             Source::CountMetrics,
@@ -569,7 +593,7 @@ pub(crate) mod tests {
             );
         }
         let ready = mono + Duration::from_secs(60);
-        app.on_tick(ready);
+        app.on_tick(ready, wall());
         let out = text(&render(&app, ready, 160, 45));
         let header = out.lines().next().unwrap();
         assert!(!header.contains("throttled · next in"));
@@ -731,6 +755,110 @@ pub(crate) mod tests {
         assert!(out.contains("select application insights"));
         assert!(out.contains("esc quit"));
         assert!(!out.contains("sessions & users"));
+        app.toast("ignoring invalid config.toml", Instant::now());
+        let out = text(&render(&app, Instant::now(), 100, 30));
+        assert!(out.contains("ignoring invalid config.toml"));
+        app.on_data(
+            DataEvent::Instances(Ok(demo_instances())),
+            Instant::now(),
+            wall(),
+        );
+        app.picker.as_mut().unwrap().pending_app = Some("nope".into());
+        app.on_data(
+            DataEvent::Instances(Ok(demo_instances())),
+            Instant::now(),
+            wall(),
+        );
+        let out = text(&render(&app, Instant::now(), 120, 40));
+        assert!(out.contains("no instance named nope"));
+    }
+
+    #[test]
+    fn auth_screen_draws_the_picker_for_recovery() {
+        let (mut app, mono) = demo_app(View::Overview);
+        app.auth_problem = Some(AuthError::NotLoggedIn("expired".into()));
+        app.on_key(crate::app::tests::ch('i'), mono);
+        let out = text(&render(&app, mono, 100, 30));
+        assert!(out.contains("select application insights"));
+        assert!(out.contains("discovering instances"));
+    }
+
+    #[test]
+    fn failed_top_lists_show_the_error_instead_of_loading() {
+        use crate::azure::http::AzError;
+        use crate::data::dashboard::{DashboardUpdate, Source};
+        let (mut app, mono) = demo_app(View::Failures);
+        app.store.tops = None;
+        app.on_data(
+            DataEvent::Dashboard(DashboardUpdate {
+                errors: vec![(
+                    Source::Tops,
+                    AzError::Http {
+                        status: 403,
+                        message: "tops denied".into(),
+                    },
+                )],
+                ..Default::default()
+            }),
+            mono,
+            wall(),
+        );
+        let out = text(&render(&app, mono, 160, 45));
+        assert!(!out.contains("loading…"));
+        assert!(
+            out.lines()
+                .skip(1)
+                .any(|l| l.contains("HTTP 403: tops denied"))
+        );
+    }
+
+    #[test]
+    fn stale_scalars_and_alert_window_are_visible_while_charts_stay_fresh() {
+        use crate::azure::http::AzError;
+        use crate::data::dashboard::{DashboardUpdate, Source};
+        let (mut app, mono) = demo_app(View::Overview);
+        let later = wall() + chrono::Duration::hours(1);
+        app.on_data(
+            DataEvent::Dashboard(DashboardUpdate {
+                series: app
+                    .store
+                    .series
+                    .iter()
+                    .map(|(id, v)| (*id, v.value.clone()))
+                    .collect(),
+                errors: vec![
+                    (Source::AlertWindow, AzError::Network("down".into())),
+                    (Source::Scalars, AzError::Network("down".into())),
+                ],
+                ..Default::default()
+            }),
+            mono,
+            later,
+        );
+        assert!(!app.alerts.failures());
+        let theme = Theme::new(Depth::TrueColor);
+        let mut t = Terminal::new(TestBackend::new(160, 45)).unwrap();
+        t.draw(|f| draw(f, &app, &theme, later.with_timezone(local().offset()), mono))
+            .unwrap();
+        let layout = overview_layout(Rect::new(0, 0, 160, 45));
+        for index in [0, 1, 3, 5] {
+            let tile = rect_text(&t, layout.kpis[index]);
+            assert!(tile.contains("stale 1h"), "tile {index}: {tile}");
+        }
+        assert!(!app.store.is_stale(SeriesId::RequestsFailed, later, 30));
+        assert!(
+            text(&t)
+                .lines()
+                .next()
+                .unwrap()
+                .contains("failures · stale 1h")
+        );
+        app.view = View::Failures;
+        t.draw(|f| draw(f, &app, &theme, later.with_timezone(local().offset()), mono))
+            .unwrap();
+        let panel = rect_text(&t, failures_layout(Rect::new(0, 0, 160, 45)).main);
+        assert!(panel.contains("stale 1h"), "{panel}");
+        assert!(panel.contains("last known"), "{panel}");
     }
 
     /// Opens drill-down screens from `panel` by pressing Enter along `path`
@@ -878,6 +1006,51 @@ pub(crate) mod tests {
             let (app, mono) = demo_app(view);
             for w in (20..=200).step_by(7) {
                 for h in (5..=60).step_by(5) {
+                    render(&app, mono, w, h);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drill_and_picker_states_render_at_all_sizes() {
+        let mut cases = Vec::new();
+        for (view, panel) in [
+            (View::Overview, '2'),
+            (View::Overview, '3'),
+            (View::Overview, '4'),
+            (View::Overview, '5'),
+            (View::Overview, '6'),
+            (View::Overview, '7'),
+            (View::Overview, '8'),
+            (View::Overview, '9'),
+            (View::Failures, '9'),
+        ] {
+            for path in [&[][..], &[0][..]] {
+                cases.push(drill_app(view, panel, path));
+            }
+        }
+        cases.push(drill_app(View::Overview, '2', &[0, 0]));
+        let (mut loading, mono) = drill_app(View::Overview, '2', &[]);
+        loading.drill[0].data = crate::app::FrameData::Loading;
+        cases.push((loading, mono));
+        let (mut failed, mono) = drill_app(View::Overview, '2', &[]);
+        failed.drill[0].data = crate::app::FrameData::Failed("failed to load".into());
+        cases.push((failed, mono));
+        for all in [
+            None,
+            Some(Err("discovery failed".into())),
+            Some(Ok(vec![])),
+            Some(Ok(demo_instances())),
+        ] {
+            let mut app = App::new(Config::default(), None, TimeRange::H4, 30);
+            app.open_picker(false, None);
+            app.picker.as_mut().unwrap().all = all;
+            cases.push((app, Instant::now()));
+        }
+        for (app, mono) in cases {
+            for w in (20..=200).step_by(3) {
+                for h in (5..=60).step_by(3) {
                     render(&app, mono, w, h);
                 }
             }

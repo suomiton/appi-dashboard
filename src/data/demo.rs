@@ -812,7 +812,7 @@ impl Backend for DemoBackend {
 mod tests {
     use super::*;
     use crate::data::alerts::{AlertConfig, evaluate};
-    use crate::data::dashboard::{View, refresh_dashboard};
+    use crate::data::dashboard::refresh_dashboard;
     use crate::data::store::Store;
     use crate::data::time::TimeRange;
 
@@ -821,11 +821,11 @@ mod tests {
         let b = DemoBackend::new();
         let inst = demo_instances().remove(0);
         let now = chrono::Utc::now();
-        let u = refresh_dashboard(&b, &inst, TimeRange::H4, View::Failures, now).await;
+        let u = refresh_dashboard(&b, &inst, TimeRange::H4, now).await;
         assert!(u.errors.is_empty());
         let mut s = Store::default();
         s.apply(u, now);
-        assert!(evaluate(&AlertConfig::default(), &s).failures());
+        assert!(evaluate(&AlertConfig::default(), &s, now, 30).failures());
         assert!(s.has_data(crate::data::catalog::SeriesId::Sessions));
         assert!(!s.has_data(crate::data::catalog::SeriesId::ProcessorCpu));
         assert_eq!(
@@ -863,8 +863,8 @@ mod tests {
         let b = DemoBackend::new();
         let inst = demo_instances().remove(0);
         let now = chrono::Utc::now();
-        let a = refresh_dashboard(&b, &inst, TimeRange::H1, View::Overview, now).await;
-        let c = refresh_dashboard(&b, &inst, TimeRange::H1, View::Overview, now).await;
+        let a = refresh_dashboard(&b, &inst, TimeRange::H1, now).await;
+        let c = refresh_dashboard(&b, &inst, TimeRange::H1, now).await;
         assert_eq!(
             a.series[&crate::data::catalog::SeriesId::RequestsCount],
             c.series[&crate::data::catalog::SeriesId::RequestsCount]
