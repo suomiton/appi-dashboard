@@ -121,13 +121,21 @@ pub fn refresh_step(current: u64, up: bool) -> u64 {
     }
 }
 
-/// Nearest-neighbour resampling to exactly `n` values.
+/// Resamples to exactly `n` values, preserving peaks when downsampling.
+/// Empty output buckets stay missing; upsampling uses nearest neighbours.
 pub fn resample(values: &[Option<f64>], n: usize) -> Vec<Option<f64>> {
-    if values.is_empty() {
+    if values.is_empty() || n == 0 {
         return vec![None; n];
     }
+    if n >= values.len() {
+        return (0..n).map(|i| values[i * values.len() / n]).collect();
+    }
     (0..n)
-        .map(|i| values.get(i * values.len() / n).copied().flatten())
+        .map(|i| {
+            let lo = i * values.len() / n;
+            let hi = (i + 1) * values.len() / n;
+            values[lo..hi].iter().flatten().copied().reduce(f64::max)
+        })
         .collect()
 }
 
@@ -201,9 +209,37 @@ mod tests {
         );
         assert_eq!(
             resample(&[Some(1.), Some(2.), Some(3.), Some(4.)], 2),
-            vec![Some(1.), Some(3.)]
+            vec![Some(2.), Some(4.)]
         );
         assert_eq!(resample(&[], 3), vec![None, None, None]);
         assert_eq!(resample(&[Some(1.)], 0), Vec::<Option<f64>>::new());
+    }
+
+    #[test]
+    fn downsampling_preserves_a_spike_in_every_bucket() {
+        for (buckets, slots) in [(96, 76), (144, 102), (48, 10)] {
+            for spike in 0..buckets {
+                let mut values = vec![Some(0.0); buckets];
+                values[spike] = Some(42.0);
+                let sampled = resample(&values, slots);
+                assert_eq!(sampled.len(), slots);
+                assert!(
+                    sampled.contains(&Some(42.0)),
+                    "lost spike at {spike} when resampling {buckets} to {slots}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resampling_preserves_missing_buckets_and_zeroes() {
+        let values = [None, None, Some(0.0), None, Some(3.0), Some(7.0), None];
+        assert_eq!(resample(&values, 3), vec![None, Some(0.0), Some(7.0)]);
+        assert_eq!(
+            resample(&[None, Some(0.0)], 4),
+            vec![None, None, Some(0.0), Some(0.0)]
+        );
+        assert_eq!(resample(&values, values.len()), values);
+        assert_eq!(resample(&[], 0), Vec::<Option<f64>>::new());
     }
 }
