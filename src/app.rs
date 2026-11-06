@@ -299,6 +299,8 @@ pub struct App {
     pub toast: Option<(String, Instant)>,
     pub refreshing: bool,
     pub next_refresh: Option<Instant>,
+    /// Server-directed cooldown, preserved across refresh controls and selection changes.
+    throttled_until: Option<Instant>,
     /// Set when the range or instance changes while a refresh is in flight:
     /// that refresh's result belongs to the old selection and is dropped.
     discard_in_flight: bool,
@@ -332,6 +334,7 @@ impl App {
             toast: None,
             refreshing: false,
             next_refresh: None,
+            throttled_until: None,
             discard_in_flight: false,
             refetch_after_in_flight: false,
             picker: None,
@@ -349,10 +352,19 @@ impl App {
             .map(|t| t.saturating_duration_since(now).as_secs())
     }
 
-    /// Starts a refresh unless one is running or there is no instance.
-    fn fetch_now(&mut self) -> Vec<Command> {
+    pub fn is_throttled(&self, now: Instant) -> bool {
+        self.throttled_until.is_some_and(|until| now < until)
+    }
+
+    /// Starts a refresh unless one is running, Azure asked us to wait, or
+    /// there is no instance. All dashboard refresh paths honour the cooldown.
+    fn fetch_now(&mut self, now: Instant) -> Vec<Command> {
+        if self.is_throttled(now) {
+            return Vec::new();
+        }
         match (&self.instance, self.refreshing) {
             (Some(inst), false) => {
+                self.throttled_until = None;
                 self.refreshing = true;
                 vec![Command::Fetch(DataRequest::Refresh {
                     instance: inst.clone(),
@@ -596,7 +608,7 @@ impl App {
             self.next_refresh = Some(now);
             Vec::new()
         } else {
-            self.fetch_now()
+            self.fetch_now(now)
         }
     }
 
@@ -609,7 +621,7 @@ impl App {
             self.toast = None;
         }
         if self.next_refresh.is_none_or(|t| now >= t) {
-            self.fetch_now()
+            self.fetch_now(now)
         } else {
             Vec::new()
         }
@@ -619,8 +631,24 @@ impl App {
         match ev {
             DataEvent::Dashboard(u) => {
                 self.refreshing = false;
+                let retry_after = u
+                    .errors
+                    .iter()
+                    .filter_map(|(_, e)| match e {
+                        AzError::Throttled { retry_after } => Some(retry_after.unwrap_or_default()),
+                        _ => None,
+                    })
+                    .max();
+                if let Some(wait) = retry_after {
+                    let wait = wait.max(Duration::from_secs(self.refresh_secs));
+                    self.throttled_until = Some(now + wait);
+                    self.next_refresh = self.throttled_until;
+                }
+                // Consume both flags even when old-selection data is discarded.
+                // The throttle still applies to requests for the new selection.
+                let refetch = std::mem::take(&mut self.refetch_after_in_flight);
                 if std::mem::take(&mut self.discard_in_flight) {
-                    return self.fetch_now();
+                    return self.fetch_now(now);
                 }
                 let auth = u.errors.iter().find_map(|(_, e)| match e {
                     AzError::Auth(a) => Some(a.clone()),
@@ -634,9 +662,11 @@ impl App {
                     self.refresh_secs
                 };
                 self.auth_problem = auth;
-                self.next_refresh = Some(now + Duration::from_secs(wait));
-                if std::mem::take(&mut self.refetch_after_in_flight) {
-                    return self.fetch_now();
+                self.next_refresh = Some(
+                    (now + Duration::from_secs(wait)).max(self.throttled_until.unwrap_or(now)),
+                );
+                if refetch {
+                    return self.fetch_now(now);
                 }
                 Vec::new()
             }
@@ -708,7 +738,7 @@ impl App {
                     if self.refreshing {
                         self.refetch_after_in_flight = true;
                     }
-                    return self.fetch_now();
+                    return self.fetch_now(now);
                 }
             }
             KeyCode::Char(c) if c.is_ascii_digit() => {
@@ -727,11 +757,14 @@ impl App {
                     self.focus = None;
                 }
             }
-            KeyCode::Char('r') => return self.fetch_now(),
+            KeyCode::Char('r') => return self.fetch_now(now),
             KeyCode::Char(c @ ('+' | '-')) => {
                 self.refresh_secs = refresh_step(self.refresh_secs, c == '+');
                 self.config.refresh_secs = self.refresh_secs;
-                self.next_refresh = Some(now + Duration::from_secs(self.refresh_secs));
+                self.next_refresh = Some(
+                    (now + Duration::from_secs(self.refresh_secs))
+                        .max(self.throttled_until.unwrap_or(now)),
+                );
                 return vec![Command::SaveConfig(self.config.clone())];
             }
             KeyCode::Enter => {
@@ -866,6 +899,142 @@ pub(crate) mod tests {
         assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(29))), 0);
         assert_eq!(a.seconds_to_refresh(t0 + Duration::from_secs(20)), Some(10));
         assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(30))), 1);
+    }
+
+    fn throttled_update(retry_after: Option<Duration>) -> DashboardUpdate {
+        let mut u = good_update();
+        u.errors
+            .push((Source::CountMetrics, AzError::Throttled { retry_after }));
+        u
+    }
+
+    #[test]
+    fn throttled_result_pushes_next_refresh_out() {
+        let mut a = app();
+        a.refresh_secs = 15;
+        let t0 = Instant::now();
+        a.on_tick(t0);
+        let mut u = throttled_update(Some(Duration::from_secs(60)));
+        u.errors.push((
+            Source::AverageMetrics,
+            AzError::Throttled {
+                retry_after: Some(Duration::from_secs(90)),
+            },
+        ));
+        u.errors.push((
+            Source::CountTotals,
+            AzError::Throttled { retry_after: None },
+        ));
+        assert!(a.on_data(DataEvent::Dashboard(u), t0, wall()).is_empty());
+        assert_eq!(a.seconds_to_refresh(t0), Some(90));
+        assert!(a.is_throttled(t0));
+        assert!(
+            a.store.has_data(SeriesId::RequestsFailed),
+            "partial data is kept"
+        );
+        assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(89))), 0);
+        let ready = t0 + Duration::from_secs(90);
+        assert_eq!(fetches(&a.on_tick(ready)), 1);
+        assert!(!a.is_throttled(ready));
+        a.on_data(DataEvent::Dashboard(good_update()), ready, wall());
+        assert_eq!(a.seconds_to_refresh(ready), Some(15));
+    }
+
+    #[test]
+    fn throttling_waits_at_least_the_refresh_interval_even_with_auth_errors() {
+        for retry_after in [None, Some(Duration::ZERO), Some(Duration::from_secs(10))] {
+            let mut a = app();
+            let t0 = Instant::now();
+            a.on_tick(t0);
+            let mut u = throttled_update(retry_after);
+            u.errors.push((
+                Source::Scalars,
+                AzError::Auth(AuthError::NotLoggedIn("run az login".into())),
+            ));
+            a.on_data(DataEvent::Dashboard(u), t0, wall());
+            assert_eq!(a.seconds_to_refresh(t0), Some(30));
+            assert!(a.is_throttled(t0));
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(29))), 0);
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(30))), 1);
+        }
+    }
+
+    #[test]
+    fn in_flight_selection_changes_wait_for_throttle_before_refetching() {
+        for keys in [
+            vec![ch('t')],
+            vec![k(KeyCode::Tab)],
+            vec![k(KeyCode::Tab), ch('t')],
+        ] {
+            let mut a = app();
+            let t0 = Instant::now();
+            a.on_tick(t0);
+            for key in keys {
+                assert_eq!(fetches(&a.on_key(key, t0)), 0);
+            }
+            let discarded = a.discard_in_flight;
+            let u = throttled_update(Some(Duration::from_secs(60)));
+            assert_eq!(fetches(&a.on_data(DataEvent::Dashboard(u), t0, wall())), 0);
+            assert_eq!(a.store.has_data(SeriesId::RequestsFailed), !discarded);
+            assert!(!a.refetch_after_in_flight);
+            assert!(!a.discard_in_flight);
+            assert!(!a.refreshing);
+            assert_eq!(a.seconds_to_refresh(t0), Some(60));
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59))), 0);
+            let cmds = a.on_tick(t0 + Duration::from_secs(60));
+            assert!(
+                matches!(cmds.as_slice(), [Command::Fetch(DataRequest::Refresh {
+                range, view, ..
+            })] if *range == a.range && *view == a.view)
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_controls_cannot_bypass_throttle() {
+        for key in [ch('r'), ch('t'), ch('-'), ch('+'), k(KeyCode::Tab)] {
+            let mut a = app();
+            let t0 = Instant::now();
+            a.on_tick(t0);
+            a.on_data(
+                DataEvent::Dashboard(throttled_update(Some(Duration::from_secs(60)))),
+                t0,
+                wall(),
+            );
+            assert_eq!(fetches(&a.on_key(key, t0 + Duration::from_secs(1))), 0);
+            let deadline = a.next_refresh.unwrap();
+            assert!(deadline >= t0 + Duration::from_secs(60));
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59))), 0);
+            assert_eq!(fetches(&a.on_tick(deadline)), 1);
+        }
+    }
+
+    #[test]
+    fn selecting_instance_preserves_throttle_even_for_discarded_results() {
+        for in_flight in [false, true] {
+            let mut a = app();
+            let t0 = Instant::now();
+            a.on_tick(t0);
+            let u = throttled_update(Some(Duration::from_secs(60)));
+            if in_flight {
+                a.select_instance(demo_instances().remove(1), t0);
+                a.on_data(DataEvent::Dashboard(u), t0, wall());
+                assert!(!a.store.has_data(SeriesId::RequestsFailed));
+            } else {
+                a.on_data(DataEvent::Dashboard(u), t0, wall());
+                let cmds = a.select_instance(demo_instances().remove(1), t0);
+                assert_eq!(fetches(&cmds), 0);
+            }
+            assert!(!a.refreshing);
+            assert_eq!(a.seconds_to_refresh(t0), Some(60));
+            assert_eq!(fetches(&a.on_tick(t0 + Duration::from_secs(59))), 0);
+            let cmds = a.on_tick(t0 + Duration::from_secs(60));
+            assert!(
+                matches!(cmds.as_slice(), [Command::Fetch(DataRequest::Refresh {
+                instance, ..
+            })] if instance.name == a.instance.as_ref().unwrap().name)
+            );
+        }
     }
 
     #[test]

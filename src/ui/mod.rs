@@ -115,6 +115,7 @@ pub fn render(
 fn header(buf: &mut Buffer, area: Rect, ctx: &Ctx, now: DateTime<FixedOffset>, mono: Instant) {
     let app = ctx.app;
     let t = ctx.theme;
+    let throttled = app.is_throttled(mono);
     let sep = || ctx.s(" │ ", palette::DIM);
     let mut left: Vec<Span> = Vec::new();
     let name = app
@@ -190,7 +191,7 @@ fn header(buf: &mut Buffer, area: Rect, ctx: &Ctx, now: DateTime<FixedOffset>, m
     left.push(ctx.s(format!("{}s ", app.refresh_secs), palette::TEXT));
     if app.refreshing {
         left.push(ctx.s("refreshing…", palette::DIM));
-    } else if let Some(s) = app.seconds_to_refresh(mono) {
+    } else if !throttled && let Some(s) = app.seconds_to_refresh(mono) {
         left.push(ctx.s(format!("next {s}s ⟳"), palette::DIM));
     }
     if let Some(s) = app.store.scalars.as_ref().and_then(|s| s.value.servers_10m) {
@@ -199,15 +200,26 @@ fn header(buf: &mut Buffer, area: Rect, ctx: &Ctx, now: DateTime<FixedOffset>, m
     }
 
     let mut right: Vec<Span> = Vec::new();
-    if let Some(err) = app.store.current_error() {
+    if throttled {
+        // Reserve the right side so the cooldown survives narrow headers.
+        right.push(ctx.s(
+            format!(
+                "throttled · next in {}s  ",
+                app.seconds_to_refresh(mono).unwrap_or(0)
+            ),
+            palette::YELLOW,
+        ));
+    } else if let Some(err) = app.store.current_error() {
         let max = (area.width / 3).max(20) as usize;
         right.push(ctx.s(
             format!("⚠ {}  ", crate::data::format::truncate_width(err, max)),
             palette::YELLOW,
         ));
     }
-    right.push(ctx.s(now.format("%H:%M:%S").to_string(), palette::CYAN));
-    if area.width >= 120 {
+    if !throttled || area.width >= 120 {
+        right.push(ctx.s(now.format("%H:%M:%S").to_string(), palette::CYAN));
+    }
+    if area.width >= 120 && !throttled {
         right.push(ctx.s(
             format!(" {} · UTC{} ", now.format("%a %-d %b"), now.format("%:z")),
             palette::DIM,
@@ -527,6 +539,41 @@ pub(crate) mod tests {
             !out.contains("no data in range"),
             "errors are not shown as no data: {out}"
         );
+    }
+
+    #[test]
+    fn throttled_header_shows_backoff_on_narrow_and_wide_terminals() {
+        use crate::azure::http::AzError;
+        use crate::data::dashboard::{DashboardUpdate, Source};
+        use std::time::Duration;
+
+        let (mut app, mono) = demo_app(View::Overview);
+        let mut u = DashboardUpdate::default();
+        u.errors.push((
+            Source::CountMetrics,
+            AzError::Throttled {
+                retry_after: Some(Duration::from_secs(60)),
+            },
+        ));
+        app.on_data(DataEvent::Dashboard(u), mono, wall());
+        for (w, h) in [(80, 24), (100, 30), (160, 45)] {
+            let out = text(&render(&app, mono, w, h));
+            let header = out.lines().next().unwrap();
+            assert!(header.contains("throttled · next in 60s"), "{w}: {header}");
+            let out = text(&render(&app, mono + Duration::from_secs(20), w, h));
+            assert!(
+                out.lines()
+                    .next()
+                    .unwrap()
+                    .contains("throttled · next in 40s")
+            );
+        }
+        let ready = mono + Duration::from_secs(60);
+        app.on_tick(ready);
+        let out = text(&render(&app, ready, 160, 45));
+        let header = out.lines().next().unwrap();
+        assert!(!header.contains("throttled · next in"));
+        assert!(header.contains("refreshing…"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Authenticated JSON requests to Azure with retry and backoff.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use reqwest::{Method, StatusCode};
 use serde::Serialize;
@@ -157,14 +157,13 @@ impl AzureHttp {
                     .headers()
                     .get(reqwest::header::RETRY_AFTER)
                     .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.trim().parse::<u64>().ok())
-                    .map(Duration::from_secs);
-                if last {
+                    .and_then(|v| parse_retry_after(v, SystemTime::now()));
+                // Long server-directed delays belong to the refresh scheduler;
+                // capping them here would retry before Azure permits it.
+                if last || retry_after.is_some_and(|wait| wait > self.retry.max_delay) {
                     return Err(AzError::Throttled { retry_after });
                 }
-                let wait = retry_after
-                    .unwrap_or_else(|| self.retry.backoff(attempt))
-                    .min(self.retry.max_delay);
+                let wait = retry_after.unwrap_or_else(|| self.retry.backoff(attempt));
                 tokio::time::sleep(wait).await;
                 continue;
             }
@@ -184,6 +183,18 @@ impl AzureHttp {
             });
         }
     }
+}
+
+/// Retry-After accepts either delta seconds or an HTTP date. Past dates
+/// allow an immediate retry; malformed values use the policy's backoff.
+fn parse_retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    httpdate::parse_http_date(value)
+        .ok()
+        .map(|at| at.duration_since(now).unwrap_or_default())
 }
 
 /// Extracts `code: message` from an Azure error body, or the first 200
@@ -274,7 +285,7 @@ mod tests {
     async fn retries_429_honoring_retry_after() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
             .up_to_n_times(1)
             .mount(&server)
             .await;
@@ -282,10 +293,14 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#))
             .mount(&server)
             .await;
-        let r: Result<Ok_, _> = client(Arc::new(StaticTokenSource("t".into())))
-            .get_json(Audience::Arm, url(&server, "/x"))
-            .await;
+        let http = client(Arc::new(StaticTokenSource("t".into()))).with_retry(RetryPolicy {
+            max_delay: Duration::from_secs(1),
+            ..fast_retry()
+        });
+        let started = std::time::Instant::now();
+        let r: Result<Ok_, _> = http.get_json(Audience::Arm, url(&server, "/x")).await;
         assert!(r.is_ok());
+        assert!(started.elapsed() >= Duration::from_secs(1));
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
@@ -301,6 +316,70 @@ mod tests {
             .await;
         assert!(matches!(r, Err(AzError::Throttled { .. })));
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn persistent_429_with_long_retry_after_returns_without_sleeping() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "60"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = AzureHttp::new(
+            Arc::new(StaticTokenSource("t".into())),
+            Endpoints::default(),
+        );
+        let r: Result<Ok_, _> = tokio::time::timeout(
+            Duration::from_secs(1),
+            http.get_json(Audience::Arm, url(&server, "/x")),
+        )
+        .await
+        .expect("long Retry-After must return without sleeping");
+        assert!(matches!(
+            r,
+            Err(AzError::Throttled { retry_after: Some(wait) }) if wait == Duration::from_secs(60)
+        ));
+    }
+
+    #[tokio::test]
+    async fn long_retry_after_http_date_is_throttled_without_retry() {
+        let server = MockServer::start().await;
+        let date = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(120));
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", date))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = AzureHttp::new(
+            Arc::new(StaticTokenSource("t".into())),
+            Endpoints::default(),
+        );
+        let r: Result<Ok_, _> = tokio::time::timeout(
+            Duration::from_secs(1),
+            http.get_json(Audience::Arm, url(&server, "/x")),
+        )
+        .await
+        .expect("long HTTP-date Retry-After must return without sleeping");
+        assert!(matches!(
+            r,
+            Err(AzError::Throttled { retry_after: Some(wait) })
+                if wait > Duration::from_secs(110) && wait <= Duration::from_secs(120)
+        ));
+    }
+
+    #[test]
+    fn retry_after_parses_seconds_dates_and_invalid_values() {
+        let now = httpdate::parse_http_date("Wed, 04 Nov 2026 13:00:00 GMT").unwrap();
+        for value in [" 60 ", "Wed, 04 Nov 2026 13:01:00 GMT"] {
+            assert_eq!(parse_retry_after(value, now), Some(Duration::from_secs(60)));
+        }
+        for value in ["0", "Wed, 04 Nov 2026 12:59:00 GMT"] {
+            assert_eq!(parse_retry_after(value, now), Some(Duration::ZERO));
+        }
+        for value in ["", "-1", "tomorrow"] {
+            assert_eq!(parse_retry_after(value, now), None);
+        }
     }
 
     #[tokio::test]

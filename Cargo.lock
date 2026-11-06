@@ -101,6 +101,7 @@ dependencies = [
  "directories",
  "flate2",
  "futures",
+ "httpdate",
  "insta",
  "open",
  "ratatui",
